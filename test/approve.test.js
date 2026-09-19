@@ -4,10 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// Спецификация базовой политики. Лояльная — в approve.loyal.test.js: политика выбирается
+// один раз при загрузке модулей, поэтому каждая живёт в своём файле и своём процессе.
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-approve-'));
 process.env.CR_ROOT = root;
 process.env.CR_MASTER_KEY = 'ключ-подтверждений';
 process.env.CR_APPROVE_TIMEOUT = '1';
+process.env.CR_POLICY = 'base';
 
 const gate = await import('../src/approve/gate.js');
 const grants = await import('../src/approve/grants.js');
@@ -74,11 +77,11 @@ test('отказ по проекту оставляет его только на
   const { ctx: no, asked: askedNo } = human('decline', 'B');
 
   // Сессии разрешение уже выдано другим вопросом, чтобы проверить именно проект.
-  grants.setSessionWrite('B', true);
+  grants.set('B', 'session', true);
 
   await assert.rejects(gate.authorize(no, write({ project: 'shop', alias: 'shop/prod' })), /только на чтение/);
   assert.equal(askedNo.length, 1);
-  assert.equal(grants.projectAccess('B', 'shop'), 'read');
+  assert.equal(grants.get('B', 'project:shop'), 'denied');
 
   // Второй раз вопроса нет — сразу отказ, даже клиенту, который согласился бы.
   const before = queue.recent(1)[0];

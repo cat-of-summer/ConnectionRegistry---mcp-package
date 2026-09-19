@@ -87,7 +87,55 @@ const MIGRATIONS = [
     const columns = db.prepare('PRAGMA table_info(connections)').all().map((c) => c.name);
     if (columns.includes('confirm_policy')) db.exec('ALTER TABLE connections DROP COLUMN confirm_policy');
   },
+
+  // 3 — хост переехал внутрь проекта: алиас стал «проект/имя», как у подключения.
+  // До этого хост был общей величиной без владельца, и разрешение на проект его не
+  // покрывало по построению. Теперь проект выводится из алиаса одинаково везде.
+  (db) => {
+    const columns = db.prepare('PRAGMA table_info(hosts)').all().map((c) => c.name);
+    if (!columns.includes('project')) db.exec('ALTER TABLE hosts ADD COLUMN project TEXT');
+
+    for (const host of db.prepare('SELECT id, alias FROM hosts ORDER BY id').all()) {
+      const alias = host.alias.includes('/') ? host.alias : projectizeHostAlias(db, host);
+      db.prepare('UPDATE hosts SET alias = ?, project = ? WHERE id = ?')
+        .run(alias, alias.split('/')[0], host.id);
+    }
+
+    db.exec('CREATE INDEX IF NOT EXISTS hosts_project ON hosts(project)');
+  },
 ];
+
+/**
+ * Переименовывает плоский алиас хоста в «проект/имя». Проект ищется там, где он
+ * действительно есть: в имени самого хоста («adzhubey-dev» при живом проекте adzhubey)
+ * либо в подключениях, которые на хост ссылаются. Хост, не связанный ни с чем, заводит
+ * собственный проект: выдумывать ему чужой владелец было бы хуже, чем назвать вещи как есть.
+ */
+function projectizeHostAlias(db, host) {
+  const projects = new Set(db.prepare('SELECT DISTINCT project FROM connections').all().map((r) => r.project));
+
+  let candidate = null;
+  const cut = host.alias.search(/[-._]/);
+  if (cut > 0) {
+    const head = host.alias.slice(0, cut);
+    const tail = host.alias.slice(cut + 1);
+    if (projects.has(head) && /^[a-z0-9]/.test(tail)) candidate = `${head}/${tail}`;
+  }
+
+  if (!candidate) {
+    const used = db.prepare(`SELECT DISTINCT c.project FROM connections c
+                             WHERE c.host_id = ? ORDER BY c.project`).all(host.id);
+    candidate = used.length ? `${used[0].project}/${host.alias}` : `${host.alias}/main`;
+  }
+
+  const taken = (alias) => db.prepare('SELECT 1 FROM hosts WHERE alias = ? AND id != ?').get(alias, host.id);
+  if (!taken(candidate)) return candidate;
+
+  for (let n = 2; ; n++) {
+    const next = `${candidate}-${n}`;
+    if (!taken(next)) return next;
+  }
+}
 
 export function db() {
   if (handle) return handle;

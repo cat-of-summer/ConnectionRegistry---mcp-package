@@ -22,6 +22,7 @@ export const cfg = {
   masterKeyFile: str('CR_MASTER_KEY_FILE'),
 
   // Подтверждения
+  policy: str('CR_POLICY', 'base'),
   approveTimeoutMs: int('CR_APPROVE_TIMEOUT', 300) * 1000,
 
   // Журнал

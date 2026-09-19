@@ -9,6 +9,7 @@ import { cfg } from './config.js';
 import { DIRS } from './paths.js';
 import { createServer } from './server.js';
 import * as queue from './approve/queue.js';
+import * as grants from './approve/grants.js';
 import * as auditQuery from './audit/query.js';
 import { newUploadDir, describe, safeName } from './artifacts.js';
 import { approvalsPage, auditPage } from './web/pages.js';
@@ -74,7 +75,11 @@ async function handleMcp(req, res, spec) {
   });
 
   transport.onclose = () => {
-    if (transport.sessionId) sessions.delete(transport.sessionId);
+    if (!transport.sessionId) return;
+    sessions.delete(transport.sessionId);
+    // «Разрешено до конца сессии» обязано кончиться вместе с ней: без этого выданные
+    // разрешения лежали бы в памяти до перезапуска процесса.
+    grants.forget(transport.sessionId);
   };
 
   await built.server.connect(transport);

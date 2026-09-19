@@ -5,11 +5,13 @@ export const AUTH_KINDS = ['password', 'key', 'agent'];
 export const DB_ENGINES = ['postgres', 'mysql', 'mariadb'];
 export const FILE_PROTOCOLS = ['sftp', 'ftp', 'ftps'];
 
-// Алиас подключения — всегда `проект/точка входа`: проект слева заодно служит
-// ключом заметок, поэтому одно имя описывает и доступ, и знание о нём.
+// Алиас всегда `проект/имя` — и у подключения, и у хоста: проект слева служит
+// ключом заметок и границей разрешений, поэтому одно имя описывает и доступ,
+// и знание о нём. Хост живёт в проекте: «adzhubey/dev», «adzhubey/prod».
 export const ALIAS_RE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
-export const HOST_ALIAS_RE = /^[a-z0-9][a-z0-9._-]*$/;
-export const PROJECT_RE = HOST_ALIAS_RE;
+export const PROJECT_RE = /^[a-z0-9][a-z0-9._-]*$/;
+
+export const projectOf = (alias) => String(alias || '').split('/')[0] || null;
 
 export function assertAlias(alias) {
   if (!ALIAS_RE.test(String(alias || ''))) {
@@ -19,8 +21,8 @@ export function assertAlias(alias) {
 }
 
 export function assertHostAlias(alias) {
-  if (!HOST_ALIAS_RE.test(String(alias || ''))) {
-    throw new Error(`алиас хоста — одно слово строчными буквами: получено «${alias}»`);
+  if (!ALIAS_RE.test(String(alias || ''))) {
+    throw new Error(`алиас хоста должен быть вида «проект/имя», строчными: получено «${alias}»`);
   }
   return alias;
 }

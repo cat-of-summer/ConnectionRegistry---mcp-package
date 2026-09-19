@@ -13,6 +13,7 @@ const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
 const { createServer } = await import('../src/server.js');
 const { ALL, GROUPS, select } = await import('../src/tools/groups.js');
+const { POLICIES } = await import('../src/approve/policy.js');
 
 // Манифест агент вычитывает при каждом подключении, до первого полезного действия.
 // Тест держит верхнюю границу и заодно ловит схему, которая не сворачивается в
@@ -90,6 +91,35 @@ test('у каждого изменяющего инструмента есть �
       continue;
     }
     assert.ok(tool.summary, `${tool.name}: нет summary, человеку нечего показать`);
+  }
+});
+
+// Новый инструмент с группой, которой политика не знает, тихо прошёл бы мимо разрешений:
+// лестница вернула бы пустой список, и вызов выполнился бы без единого вопроса.
+test('обе политики отвечают на каждый инструмент', () => {
+  for (const [name, current] of Object.entries(POLICIES)) {
+    for (const tool of ALL) {
+      const call = {
+        tool: tool.name,
+        group: tool.group,
+        alias: 'shop/prod',
+        project: 'shop',
+        host: 'shop/srv',
+        mutating: typeof tool.mutating === 'function' ? true : Boolean(tool.mutating),
+        everyTime: tool.everyTime,
+        summary: tool.name,
+      };
+
+      const steps = current.ladder(call);
+      assert.ok(Array.isArray(steps), `${name}/${tool.name}: политика не вернула лестницу`);
+
+      const mutates = call.mutating || tool.everyTime;
+      const survey = tool.group === 'service' || tool.group === 'audit'
+        || ['conn_list', 'host_list', 'notes_search'].includes(tool.name);
+      if (mutates && !survey) {
+        assert.ok(steps.length, `${name}/${tool.name}: изменяющий вызов прошёл бы без разрешения`);
+      }
+    }
   }
 });
 

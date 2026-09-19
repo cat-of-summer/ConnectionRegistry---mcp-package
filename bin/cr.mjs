@@ -93,10 +93,12 @@ const COMMANDS = {
   host(args) {
     const [action, alias] = args._;
 
-    if (!action || action === 'ls') return print(listHosts().map((h) => ({ ...h, usedBy: hostUsage(h.alias) })));
+    if (!action || action === 'ls') {
+      return print(listHosts({ project: args.project }).map((h) => ({ ...h, usedBy: hostUsage(h.alias) })));
+    }
 
     if (action === 'add' || action === 'set') {
-      if (!alias) return die('cr host add <алиас> --address … --user … [--password | --key-file …]');
+      if (!alias) return die('cr host add <проект/имя> --address … --user … [--password | --key-file …]');
       return print(upsertHost({
         alias,
         address: args.address,
@@ -112,7 +114,7 @@ const COMMANDS = {
     }
 
     if (action === 'pin') {
-      if (!alias || !args.fingerprint) return die('cr host pin <алиас> --fingerprint SHA256:…');
+      if (!alias || !args.fingerprint) return die('cr host pin <проект/имя> --fingerprint SHA256:…');
       return print(pinHostKey(alias, args.fingerprint));
     }
 
@@ -128,7 +130,7 @@ const COMMANDS = {
     if (action === 'show') return print(getConnection(alias));
 
     if (action === 'add' || action === 'set') {
-      if (!alias) return die('cr conn add <проект/имя> --kind shell --host <хост> [--config \'{"cwd":"/var/www"}\']');
+      if (!alias) return die('cr conn add <проект/имя> --kind shell --host <проект/имя> [--config \'{"cwd":"/var/www"}\']');
       let config;
       if (args.config) {
         try { config = JSON.parse(args.config); } catch (err) { return die(`--config не разобран как JSON: ${err.message}`); }
@@ -224,15 +226,15 @@ const HELP = `cr — реестр подключений
   cr doctor                          состояние: ключ, база, каталоги, журнал
   cr key gen                         сгенерировать значение для CR_MASTER_KEY
 
-  cr host ls
-  cr host add <алиас> --address <адрес> --user <логин> [--password | --password-file <ф> | --key-file <ф>]
-                      [--port 22] [--passphrase-file <ф>] [--host-key SHA256:…] [--note …]
-  cr host pin <алиас> --fingerprint SHA256:…
-  cr host rm  <алиас>
+  cr host ls [--project <проект>]
+  cr host add <проект/имя> --address <адрес> --user <логин> [--password | --password-file <ф> | --key-file <ф>]
+                           [--port 22] [--passphrase-file <ф>] [--host-key SHA256:…] [--note …]
+  cr host pin <проект/имя> --fingerprint SHA256:…
+  cr host rm  <проект/имя>
 
   cr conn ls [--project <проект>] [--kind shell|files|docker|db]
   cr conn show <проект/имя>
-  cr conn add  <проект/имя> --kind <тип> [--host <хост>|--host none] [--config '<json>']
+  cr conn add  <проект/имя> --kind <тип> [--host <проект/имя>|--host none] [--config '<json>']
                             [--password-file <ф>] [--note …]
   cr conn rm   <проект/имя>
 

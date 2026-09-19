@@ -62,8 +62,15 @@ export function wrap(def, sessionCtx) {
       const summary = def.summary ? def.summary(args, resolved) : `${def.name}${alias ? ` на ${alias}` : ''}`;
       entry.approval = await gate.authorize(ctx, {
         tool: def.name,
+        group: def.group,
         alias,
         project,
+        // Инструмент может задеть больше одного проекта — так хост объявляет тех, чьи
+        // подключения на него ссылаются: правка кредов сервера касается их всех.
+        projects: def.projects ? def.projects(args, resolved) : undefined,
+        // Право писать выдаётся на сервер: одно разрешение на shell, файлы, docker и базу
+        // одного хоста. Подключение без хоста ходит по сети само — тогда оно и есть ключ.
+        host: resolved?.host?.alias ?? alias,
         mutating: isMutating(def, args),
         everyTime: def.everyTime,
         summary,

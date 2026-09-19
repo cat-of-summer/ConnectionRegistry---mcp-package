@@ -1,6 +1,6 @@
 import { db, now } from './db.js';
 import { putSecret, replaceSecret, dropSecret } from './crypto.js';
-import { assertHostAlias, AUTH_KINDS } from './schema.js';
+import { assertHostAlias, projectOf, AUTH_KINDS } from './schema.js';
 
 // Наружу уходит только это представление: ни одного поля, по которому можно
 // восстановить секрет. Отпечаток хост-ключа — публичная величина, он остаётся.
@@ -8,6 +8,7 @@ export function publicHost(row) {
   if (!row) return null;
   return {
     alias: row.alias,
+    project: row.project,
     address: row.address,
     port: row.port,
     user: row.username,
@@ -20,8 +21,19 @@ export function publicHost(row) {
   };
 }
 
-export function listHosts() {
-  return db().prepare('SELECT * FROM hosts ORDER BY alias').all().map(publicHost);
+export function listHosts({ project } = {}) {
+  const sql = `SELECT * FROM hosts ${project ? 'WHERE project = @project' : ''} ORDER BY alias`;
+  return db().prepare(sql).all(project ? { project } : {}).map(publicHost);
+}
+
+/** Проекты, которым хост нужен: его собственный и те, чьи подключения на него ссылаются. */
+export function hostProjects(alias) {
+  const row = getHostRow(alias);
+  if (!row) return [projectOf(alias)].filter(Boolean);
+
+  const used = db().prepare('SELECT DISTINCT project FROM connections WHERE host_id = ? ORDER BY project')
+    .all(row.id).map((r) => r.project);
+  return [...new Set([row.project, ...used])].filter(Boolean);
 }
 
 export function getHostRow(alias) {
@@ -68,6 +80,7 @@ export function upsertHost(input) {
   const ts = now();
   const row = {
     alias,
+    project: projectOf(alias),
     address: input.address ?? existing?.address,
     port: input.port ?? existing?.port ?? 22,
     username: input.user ?? existing?.username,
@@ -87,14 +100,14 @@ export function upsertHost(input) {
   }
 
   if (existing) {
-    db().prepare(`UPDATE hosts SET address = @address, port = @port, username = @username,
+    db().prepare(`UPDATE hosts SET project = @project, address = @address, port = @port, username = @username,
       auth_kind = @auth_kind, secret_id = @secret_id, passphrase_id = @passphrase_id,
       host_key_fp = @host_key_fp, host_key_status = @host_key_status, note = @note,
       updated_at = @updated_at WHERE alias = @alias`).run(row);
   } else {
-    db().prepare(`INSERT INTO hosts (alias, address, port, username, auth_kind, secret_id, passphrase_id,
+    db().prepare(`INSERT INTO hosts (alias, project, address, port, username, auth_kind, secret_id, passphrase_id,
       host_key_fp, host_key_status, note, created_at, updated_at)
-      VALUES (@alias, @address, @port, @username, @auth_kind, @secret_id, @passphrase_id,
+      VALUES (@alias, @project, @address, @port, @username, @auth_kind, @secret_id, @passphrase_id,
       @host_key_fp, @host_key_status, @note, @created_at, @updated_at)`).run({ ...row, created_at: ts });
   }
 

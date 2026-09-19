@@ -8,6 +8,7 @@ import { listConnections, projects } from '../registry/connections.js';
 import { logSize } from '../audit/log.js';
 import { pendingCount } from '../approve/queue.js';
 import { snapshot } from '../approve/grants.js';
+import { policy } from '../approve/policy.js';
 import { upgradeSteps } from '../update.js';
 import { poolState } from '../transport/ssh.js';
 
@@ -21,8 +22,8 @@ export const TOPICS = {
       'Порядок обычной задачи:',
       '  1. conn_list — какие алиасы есть. notes_get — что уже известно про проект.',
       '  2. Инструмент по типу подключения: ssh_exec (shell), files_* (files), docker_* (docker), db_* (db).',
-      '  3. Запись спрашивает разрешение — один раз за сессию и один раз на проект — и целиком',
-      '     пишется в журнал. Чтение не спрашивает ничего.',
+      '  3. Каждое действие целиком пишется в журнал, а разрешения выдаёт человек — что именно',
+      `     спрашивается, зависит от политики (сейчас ${policy.title}): подробности в help approvals.`,
       '',
       'Разделы help: aliases, approvals, files, db, docker, notes, audit, security.',
     ].join('\n'),
@@ -32,7 +33,8 @@ export const TOPICS = {
       'A usual task:',
       '  1. conn_list — what aliases exist. notes_get — what is already known about the project.',
       '  2. A tool for the connection kind: ssh_exec (shell), files_* (files), docker_* (docker), db_* (db).',
-      '  3. A mutating action asks the human for confirmation and is journalled in full.',
+      `  3. Every action is journalled in full; what gets confirmed depends on the policy (${policy.name}) —`,
+      '     see help approvals.',
       '',
       'help topics: aliases, approvals, files, db, docker, notes, audit, security.',
     ].join('\n'),
@@ -40,24 +42,28 @@ export const TOPICS = {
 
   aliases: pick({
     ru: [
-      'Реестр двухуровневый.',
+      'Реестр двухуровневый, и оба уровня живут в проекте: алиас — всегда «проект/имя».',
       '',
       'Хост — сервер и способ войти: адрес, пользователь, ключ или пароль, отпечаток хост-ключа.',
-      'Подключение — точка входа поверх хоста: shell, files, docker, db. Алиас вида «проект/имя».',
+      'Подключение — точка входа поверх хоста: shell, files, docker, db.',
       '',
       'Один сервер держит сколько угодно подключений: myproject/shell, myproject/files,',
-      'myproject/db, myproject/queue — все они ссылаются на один хост и один набор кредов.',
+      'myproject/db, myproject/queue — все они ссылаются на один хост myproject/srv и один',
+      'набор кредов. Подключение может сослаться и на хост чужого проекта, если сервер общий;',
+      'host_list показывает такие ссылки в usedBy.',
       '',
       'Подключение без хоста ходит по сети напрямую — так заводят базу, доступную снаружи.',
       'Всё остальное (shell, docker, sftp) без хоста не бывает.',
     ].join('\n'),
     en: [
-      'The registry has two levels.',
+      'The registry has two levels, and both live in a project: an alias is always "project/name".',
       '',
       'A host is a server and a way in: address, user, key or password, host key fingerprint.',
-      'A connection is an entry point on top of a host: shell, files, docker, db. Alias is "project/name".',
+      'A connection is an entry point on top of a host: shell, files, docker, db.',
       '',
       'One server carries any number of connections, all pointing at the same credentials.',
+      'A connection may reference a host of another project when the server is shared; host_list',
+      'shows such references under usedBy.',
       '',
       'A connection without a host goes over the network directly.',
     ].join('\n'),
@@ -65,18 +71,9 @@ export const TOPICS = {
 
   approvals: pick({
     ru: [
-      'Человека спрашивают редко и по делу.',
+      `Человека спрашивают редко и по делу. Действует ${policy.title} политика (CR_POLICY=${policy.name}).`,
       '',
-      'Чтение не спрашивается никогда: conn_list, files_list/read/get, docker_ps/logs, SELECT, журнал.',
-      '',
-      'Запись спрашивается дважды за сессию и больше не спрашивается:',
-      '  1. первый изменяющий вызов — «разрешить этой сессии менять что-либо»;',
-      '  2. первая запись в каждый проект — «разрешить запись в проект X».',
-      'Дальше внутри разрешённого проекта вопросов нет. Отказ на втором вопросе оставляет проект',
-      'только на чтение до конца сессии: повторно о нём не спрашивают, сразу отвечают отказом.',
-      '',
-      'Каждый раз спрашиваются только доступы: host_set, host_remove, secret_set, conn_set, conn_remove.',
-      'Это не работа внутри проекта, а изменение того, куда и чем реестр может ходить.',
+      ...policy.help.ru,
       '',
       'Сначала спрашивает сам клиент (elicitation MCP). Если клиент этого не умеет, заявка встаёт',
       `в очередь на странице ${cfg.publicBaseUrl}/approvals и вызов ждёт до`,
@@ -85,16 +82,14 @@ export const TOPICS = {
       'Что уже разрешено этой сессии, показывает registry_info.',
     ].join('\n'),
     en: [
-      'The human is asked rarely and only where it matters.',
+      `The human is asked rarely and only where it matters. The ${policy.name} policy is active (CR_POLICY).`,
       '',
-      'Reads are never confirmed. Writes are confirmed twice per session: once for the session itself,',
-      'once per project. Inside a granted project there are no further questions; refusing the project',
-      'question leaves that project read-only until the session ends.',
-      '',
-      'Access changes are confirmed every time: host_set, host_remove, secret_set, conn_set, conn_remove.',
+      ...policy.help.en,
       '',
       `If the client cannot ask, the request waits in the queue at ${cfg.publicBaseUrl}/approvals for`,
-      `${Math.round(cfg.approveTimeoutMs / 1000)}s.`,
+      `${Math.round(cfg.approveTimeoutMs / 1000)}s. A timeout is a refusal, and it is journalled too.`,
+      '',
+      'What this session is already allowed to do is shown by registry_info.',
     ].join('\n'),
   }),
 
@@ -166,7 +161,7 @@ export const TOPICS = {
       'Два вида: факты «ключ — значение» (php.version = 8.3) и свободный текст на проект.',
       'Ключ проекта — левая часть алиаса, поэтому знание и доступ лежат под одним именем.',
       '',
-      'Запись всегда спрашивает человека: заметки — его знание, а не вывод модели.',
+      'Запись входит в разрешение на проект — отдельно о каждой заметке не спрашивают.',
       'Узнали, что факт устарел, — заменяйте значение, а не дописывайте второй ключ рядом.',
     ].join('\n'),
     en: [
@@ -174,7 +169,7 @@ export const TOPICS = {
       '',
       'Two kinds: key–value facts and free-form text per project. The project key is the left part of an alias.',
       '',
-      'Writing always asks the human. Replace an outdated fact instead of adding a second key next to it.',
+      'Writing falls under the project grant. Replace an outdated fact instead of adding a second key next to it.',
     ].join('\n'),
   }),
 
@@ -205,9 +200,9 @@ export const TOPICS = {
       'В реестре секреты лежат зашифрованными (AES-256-GCM, ключ выводится из CR_MASTER_KEY).',
       'Ключ лежит рядом с базой, поэтому шифрование защищает копию тома и бэкап, а не живой хост.',
       '',
-      'Хост-ключ SSH проверяется строго. Первый ключ закрепляется с подтверждением человека,',
-      'расхождение с закреплённым — отказ без вопросов: так выглядит и подмена сервера,',
-      'и честная переустановка, и разобраться должен человек.',
+      'Хост-ключ SSH проверяется строго. Ключ, увиденный впервые, закрепляется молча — сверять',
+      'его не с чем, — а расхождение с закреплённым отклоняется без вопросов: так выглядит',
+      'и подмена сервера, и честная переустановка, и разобраться должен человек.',
     ].join('\n'),
     en: [
       'Secrets never leave the server. No tool returns a password, a key or a connection string.',
@@ -215,8 +210,8 @@ export const TOPICS = {
       'Secrets are stored encrypted (AES-256-GCM, key derived from CR_MASTER_KEY). The key sits next to',
       'the database, so encryption protects a copy of the volume and a backup, not a live host.',
       '',
-      'SSH host keys are verified strictly: the first key is pinned after human confirmation, a mismatch',
-      'is refused outright.',
+      'SSH host keys are verified strictly: a first-seen key is pinned silently — there is nothing to',
+      'compare it against — and a mismatch with a pinned key is refused outright.',
     ].join('\n'),
   }),
 };
@@ -258,6 +253,7 @@ export const tools = [
             проектов: projects().length,
           },
           подтверждения: {
+            политика: `${policy.title} (CR_POLICY=${policy.name})`,
             выданоВЭтойСессии: snapshot(ctx?.sessionId),
             таймаутСекунд: Math.round(cfg.approveTimeoutMs / 1000),
             ждут: pendingCount(),

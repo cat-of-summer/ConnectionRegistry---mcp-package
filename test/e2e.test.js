@@ -136,7 +136,7 @@ test('чтение базы идёт сразу, запись — после с�
   const read = await call(client, 'db_query', { alias: 'demo/db', sql: 'select 1 as one' });
   assert.equal(read.isError, false, read.text);
   assert.deepEqual(read.json.rows, [[1]]);
-  assert.match(read.json.via, /demo → postgres_test:5432/, 'дошли через SSH-туннель');
+  assert.match(read.json.via, /demo\/srv → postgres_test:5432/, 'дошли через SSH-туннель');
   assert.equal(asked.length, 0, 'SELECT человека не беспокоит');
 
   const drop = await call(client, 'db_query', { alias: 'demo/db', sql: 'drop table if exists e2e' });
@@ -166,7 +166,7 @@ test('mysql работает тем же путём', { skip: !enabled }, async 
 
   assert.equal(res.isError, false, res.text);
   assert.deepEqual(res.json.rows, [[7]]);
-  assert.match(res.json.via, /demo → mysql_test:3306/);
+  assert.match(res.json.via, /demo\/srv → mysql_test:3306/);
 });
 
 test('файл кладётся и читается обратно', { skip: !enabled }, async (t) => {
@@ -238,19 +238,19 @@ test('первый ключ хоста закреплён, подменённы�
   const { client } = await connect(t, 'accept');
 
   const before = await call(client, 'host_list');
-  const host = before.json.hosts.find((item) => item.alias === 'demo');
+  const host = before.json.hosts.find((item) => item.alias === 'demo/srv');
   assert.equal(host.hostKeyStatus, 'pinned', 'после первого подключения ключ закреплён');
   assert.match(host.hostKey, /^SHA256:/);
 
   // Подменяем отпечаток руками — так выглядит смена ключа на той стороне.
   // Настоящий возвращаем в finally: иначе упавший прогон оставит хост сломанным.
   try {
-    await call(client, 'host_set', { alias: 'demo', hostKey: 'SHA256:чужой-отпечаток-которого-не-бывает' });
+    await call(client, 'host_set', { alias: 'demo/srv', hostKey: 'SHA256:чужой-отпечаток-которого-не-бывает' });
     const refused = await call(client, 'conn_check', { alias: 'demo/shell' });
     assert.equal(refused.isError, true, 'живое соединение из пула не должно обходить проверку');
     assert.match(refused.text, /не совпал с закреплённым/);
   } finally {
-    await call(client, 'host_set', { alias: 'demo', hostKey: host.hostKey });
+    await call(client, 'host_set', { alias: 'demo/srv', hostKey: host.hostKey });
   }
 
   const ok = await call(client, 'conn_check', { alias: 'demo/shell' });
@@ -299,35 +299,35 @@ test('у проекта несколько SSH-подключений: prod по
     janitor.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { approve: true } }));
     await janitor.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`)));
     for (const alias of ['shop/prod', 'shop/dev', 'shop/prod-files']) await call(janitor, 'conn_remove', { alias });
-    for (const alias of ['shop-prod', 'shop-dev']) await call(janitor, 'host_remove', { alias });
+    for (const alias of ['shop/srv-prod', 'shop/srv-dev']) await call(janitor, 'host_remove', { alias });
     await janitor.close();
   });
 
   // Агент заводит хосты и подключения сам — каждый шаг с подтверждением.
   const prodHost = await call(client, 'host_set', {
-    alias: 'shop-prod', address: 'sshd_test', port: 2222, user: 'tester', password: HOST_PASSWORD,
+    alias: 'shop/srv-prod', address: 'sshd_test', port: 2222, user: 'tester', password: HOST_PASSWORD,
   });
   assert.equal(prodHost.isError, false, prodHost.text);
   assert.equal(prodHost.text.includes(HOST_PASSWORD), false, 'пароль не вернулся в ответе');
 
   const devHost = await call(client, 'host_set', {
-    alias: 'shop-dev', address: 'sshd_dev', port: 2222, user: 'deploy', password: 'dev-stand-password',
+    alias: 'shop/srv-dev', address: 'sshd_dev', port: 2222, user: 'deploy', password: 'dev-stand-password',
   });
   assert.equal(devHost.isError, false, devHost.text);
 
-  for (const [alias, host] of [['shop/prod', 'shop-prod'], ['shop/dev', 'shop-dev']]) {
+  for (const [alias, host] of [['shop/prod', 'shop/srv-prod'], ['shop/dev', 'shop/srv-dev']]) {
     const res = await call(client, 'conn_set', { alias, kind: 'shell', host, config: { cwd: '/config' } });
     assert.equal(res.isError, false, res.text);
   }
   const files = await call(client, 'conn_set', {
-    alias: 'shop/prod-files', kind: 'files', host: 'shop-prod', config: { proto: 'sftp', root: '/config' },
+    alias: 'shop/prod-files', kind: 'files', host: 'shop/srv-prod', config: { proto: 'sftp', root: '/config' },
   });
   assert.equal(files.isError, false, files.text);
   assert.equal(asked.length, 5, 'правка доступов спрашивается каждый раз, разрешение проекта её не покрывает');
 
   const list = await call(client, 'conn_list', { project: 'shop' });
   assert.deepEqual(list.json.connections.map((c) => `${c.alias}→${c.host}`).sort(),
-    ['shop/dev→shop-dev', 'shop/prod-files→shop-prod', 'shop/prod→shop-prod']);
+    ['shop/dev→shop/srv-dev', 'shop/prod-files→shop/srv-prod', 'shop/prod→shop/srv-prod']);
 
   // Публичный ключ уезжает на dev через реестр же — по паролю, который потом не понадобится.
   const install = await call(client, 'ssh_exec', {
@@ -338,11 +338,11 @@ test('у проекта несколько SSH-подключений: prod по
   assert.equal(install.json.exitCode, 0, install.text);
 
   // Переключаем dev на ключ: пул обязан заметить смену способа входа и переподключиться.
-  const toKey = await call(client, 'secret_set', { target: 'host', alias: 'shop-dev', kind: 'private_key', value: pair.private });
+  const toKey = await call(client, 'secret_set', { target: 'host', alias: 'shop/srv-dev', kind: 'private_key', value: pair.private });
   assert.equal(toKey.isError, false, toKey.text);
 
   const hosts = await call(client, 'host_list');
-  const dev = hosts.json.hosts.find((h) => h.alias === 'shop-dev');
+  const dev = hosts.json.hosts.find((h) => h.alias === 'shop/srv-dev');
   assert.equal(dev.auth, 'key');
   assert.equal(hosts.text.includes('PRIVATE KEY'), false, 'ключ не утёк в список хостов');
 
@@ -355,7 +355,7 @@ test('у проекта несколько SSH-подключений: prod по
   assert.match(onProd.json.stdout, /tester\s+sshd_test/);
 
   // Хост с живыми подключениями убрать нельзя — реестр называет, кто мешает.
-  const blocked = await call(client, 'host_remove', { alias: 'shop-dev' });
+  const blocked = await call(client, 'host_remove', { alias: 'shop/srv-dev' });
   assert.equal(blocked.isError, true);
   assert.match(blocked.text, /shop\/dev/);
 

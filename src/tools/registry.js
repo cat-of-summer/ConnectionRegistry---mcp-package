@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { pick } from '../i18n.js';
-import { listHosts, upsertHost, removeHost, hostUsage } from '../registry/hosts.js';
+import { listHosts, upsertHost, removeHost, hostUsage, hostProjects } from '../registry/hosts.js';
 import { listConnections, getConnection, upsertConnection, removeConnection, projects } from '../registry/connections.js';
 import { KINDS, AUTH_KINDS, DB_ENGINES, FILE_PROTOCOLS } from '../registry/schema.js';
 import { putSecret, replaceSecret } from '../registry/crypto.js';
@@ -56,11 +56,15 @@ export const tools = [
     mutating: false,
     title: pick({ ru: 'Список хостов', en: 'List hosts' }),
     description: pick({
-      ru: 'Серверы, на которые ссылаются подключения: адрес, пользователь, способ входа, отпечаток ключа.',
-      en: 'Servers behind the connections: address, user, auth kind, host key fingerprint.',
+      ru: 'Серверы проекта, на которые ссылаются подключения: адрес, пользователь, способ входа, '
+        + 'отпечаток ключа. Алиас хоста — «проект/имя», как у подключения.',
+      en: 'Project servers behind the connections: address, user, auth kind, host key fingerprint. '
+        + 'A host alias is "project/name", same shape as a connection alias.',
     }),
-    input: {},
-    run: () => ({ data: { hosts: listHosts().map((h) => ({ ...h, usedBy: hostUsage(h.alias) })) } }),
+    input: {
+      project: z.string().optional().describe(pick({ ru: 'только один проект', en: 'single project only' })),
+    },
+    run: (args) => ({ data: { hosts: listHosts(args).map((h) => ({ ...h, usedBy: hostUsage(h.alias) })) } }),
   },
 
   {
@@ -70,13 +74,15 @@ export const tools = [
     mutating: true,
     title: pick({ ru: 'Завести или изменить хост', en: 'Create or update a host' }),
     description: pick({
-      ru: 'Заводит сервер: адрес, пользователь, вход по паролю или ключу. Поля, которых нет во вводе, '
-        + 'остаются прежними — сменить порт можно, не повторяя пароль. Требует подтверждения человека.',
-      en: 'Registers a server: address, user, password or key auth. Omitted fields keep their previous value, '
-        + 'so changing a port does not require repeating the password. Requires human confirmation.',
+      ru: 'Заводит сервер проекта: адрес, пользователь, вход по паролю или ключу. Алиас — «проект/имя», '
+        + 'например adzhubey/dev. Поля, которых нет во вводе, остаются прежними — сменить порт можно, '
+        + 'не повторяя пароль.',
+      en: 'Registers a project server: address, user, password or key auth. Alias is "project/name", '
+        + 'e.g. adzhubey/dev. Omitted fields keep their previous value, so changing a port does not '
+        + 'require repeating the password.',
     }),
     input: {
-      alias: z.string().describe(pick({ ru: 'короткое имя сервера', en: 'short server name' })),
+      alias: z.string().describe(pick({ ru: 'алиас вида project/name', en: 'alias like project/name' })),
       address: z.string().optional(),
       port: z.number().int().positive().optional(),
       user: z.string().optional(),
@@ -87,6 +93,9 @@ export const tools = [
       hostKey: z.string().optional().describe(pick({ ru: 'отпечаток SHA256:…', en: 'SHA256:… fingerprint' })),
       note: z.string().optional(),
     },
+    // Хост живёт в своём проекте, но пользуются им и подключения других проектов:
+    // правка кредов задевает их все, поэтому разрешение спрашивается у каждого.
+    projects: (args) => hostProjects(args.alias),
     summary: (args) => `Завести или изменить хост «${args.alias}» в реестре`,
     details: (args) => ({
       адрес: args.address,
@@ -107,6 +116,7 @@ export const tools = [
       en: 'Deletes a server and its secrets. Refuses while any connection still points at it.',
     }),
     input: { alias: z.string() },
+    projects: (args) => hostProjects(args.alias),
     summary: (args) => `Убрать хост «${args.alias}» и его секреты из реестра`,
     run: (args) => ({ data: removeHost(args.alias) }),
   },
@@ -119,16 +129,16 @@ export const tools = [
     title: pick({ ru: 'Завести или изменить подключение', en: 'Create or update a connection' }),
     description: pick({
       ru: 'Заводит точку входа поверх хоста: shell, files, docker или db. Алиас — «проект/имя». '
-        + 'Один сервер держит сколько угодно подключений. Требует подтверждения человека.',
+        + 'Один сервер держит сколько угодно подключений.',
       en: 'Registers an entry point on top of a host: shell, files, docker or db. Alias is "project/name". '
-        + 'One server can carry any number of connections. Requires human confirmation.',
+        + 'One server can carry any number of connections.',
     }),
     input: {
       alias: z.string().describe(pick({ ru: 'project/name', en: 'project/name' })),
       kind: z.enum(KINDS).optional(),
       host: z.string().nullable().optional().describe(pick({
-        ru: 'алиас хоста; null — ходить напрямую по сети',
-        en: 'host alias; null means direct network access',
+        ru: 'алиас хоста вида project/name; null — ходить напрямую по сети',
+        en: 'host alias like project/name; null means direct network access',
       })),
       config: z.object({
         cwd: z.string().optional(),

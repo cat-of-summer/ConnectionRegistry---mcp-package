@@ -4,6 +4,7 @@ import { pick } from './i18n.js';
 import { select } from './tools/groups.js';
 import { wrap } from './tools/shared.js';
 import { TOPICS } from './tools/help.js';
+import { policy } from './approve/policy.js';
 import * as query from './audit/query.js';
 import { listConnections } from './registry/connections.js';
 import { checkForUpdate, updateNotice } from './update.js';
@@ -21,11 +22,10 @@ function instructions(groups, notice) {
       'Начинайте с conn_list (какие алиасы есть) и notes_get (что уже известно про проект).',
       'Дальше инструмент по типу подключения: ssh_exec, files_*, docker_*, db_*.',
       '',
-      'Чтение не спрашивает ничего. На запись человек даёт разрешение один раз за сессию и один раз',
-      'на проект, дальше внутри проекта вопросов нет; правка хостов, секретов и подключений',
-      'спрашивается каждый раз. Всё целиком попадает в журнал.',
+      ...policy.short.ru,
+      'Всё целиком попадает в журнал.',
       'Отказ и таймаут — обычный исход, а не сбой: сообщите о нём и предложите, что делать.',
-      'Если проект оставили только на чтение, не пытайтесь обойти это другим инструментом.',
+      'Если человек в чём-то отказал, не пытайтесь обойти это другим инструментом.',
       '',
       `Подробности — help (разделы: ${Object.keys(TOPICS).join(', ')}), состояние — registry_info.`,
       `Поднятые группы инструментов: ${groups.join(', ')}.`,
@@ -38,10 +38,9 @@ function instructions(groups, notice) {
       'Start with conn_list and notes_get, then use the tool for the connection kind:',
       'ssh_exec, files_*, docker_*, db_*.',
       '',
-      'Reads ask nothing. Writes need the human to grant them once per session and once per project;',
-      'after that there are no questions inside that project, while host, secret and connection edits',
-      'are confirmed every time. Everything is journalled in full. A refusal or a timeout is a normal',
-      'outcome, not a failure.',
+      ...policy.short.en,
+      'Everything is journalled in full. A refusal or a timeout is a normal outcome, not a failure.',
+      'If the human refused something, do not try to route around it with another tool.',
       '',
       `Details — help (topics: ${Object.keys(TOPICS).join(', ')}), state — registry_info.`,
       `Active tool groups: ${groups.join(', ')}.`,

@@ -18,6 +18,7 @@ const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
 const { createServer } = await import('../src/server.js');
 const { ALL, GROUPS, ALIASES } = await import('../src/tools/groups.js');
+const { policy, isSurvey, REMOTE_GROUPS } = await import('../src/approve/policy.js');
 const { LANG } = await import('../src/i18n.js');
 
 const { server } = await createServer({ spec: 'all' });
@@ -58,7 +59,23 @@ function params(tool) {
   ].join('\n');
 }
 
+// Класс подтверждения зависит от политики: справочник собирается под ту, что задана
+// в CR_POLICY, и не должен описывать чужую.
 function confirm(def) {
+  if (policy.name === 'loyal') {
+    if (isSurvey({ tool: def.name, group: def.group })) return t('нет', 'no');
+
+    const project = t('по доступу к проекту', 'under the project access');
+    if (typeof def.mutating === 'function') {
+      return t(`${project}, плюс запись на хост для изменяющего запроса`,
+        `${project}, plus host write access when the statement mutates`);
+    }
+    if (def.mutating && REMOTE_GROUPS.includes(def.group)) {
+      return t(`${project} и разрешению на запись на хост`, `${project} and the host write grant`);
+    }
+    return project;
+  }
+
   if (def.everyTime) return t('каждый раз', 'every call');
   if (typeof def.mutating === 'function') {
     return t('по разрешению на проект, если запрос изменяющий', 'under the project grant when the statement mutates');
