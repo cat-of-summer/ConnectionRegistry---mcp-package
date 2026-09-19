@@ -1,0 +1,4 @@
+[submodule "app/data"]
+	path = app/data
+	url = https://github.com/cat-of-summer/ConnectionRegistry---mcp-package.git
+	branch = app

@@ -1,0 +1,15 @@
+include:
+  - path: services/nginx/docker-compose.yml
+    project_directory: .
+    env_file: .env
+  - path: services/node/docker-compose.yml
+    project_directory: .
+    env_file: .env
+
+services:
+  nginx:
+    environment:
+      - NGINX_CONF=${NGINX_CONF:-registry}
+      - MCP_PORT=${MCP_PORT:-8932}
+    depends_on:
+      - node

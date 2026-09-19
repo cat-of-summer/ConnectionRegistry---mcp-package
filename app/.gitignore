@@ -1,0 +1,6 @@
+.env
+docker-compose.override.yml
+data/node_modules/
+data/registry/
+data/logs/
+data/uploads/

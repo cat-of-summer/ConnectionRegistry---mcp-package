@@ -1,0 +1,23 @@
+ARG NODE_VERSION=22
+
+FROM node:${NODE_VERSION}-bookworm-slim
+
+ARG NODE_APT_PACKAGES
+ARG PG_CLIENT_VERSION=17
+
+# Клиенты БД нужны для db_dump: дамп снимает штатная утилита, а не самописный обход схемы.
+# pg_dump берётся из репозитория PGDG, а не из Debian: дебиановский 15-й отказывается
+# снимать дамп с сервера 16, а свежий клиент работает с любым сервером не новее себя.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-${PG_CLIENT_VERSION} ${NODE_APT_PACKAGES} \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG NODE_ENTRYPOINT=services/node/entrypoint.node.sh
+COPY ${NODE_ENTRYPOINT} /usr/local/bin/entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

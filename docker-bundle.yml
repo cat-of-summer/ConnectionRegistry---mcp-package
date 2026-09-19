@@ -1,0 +1,126 @@
+version: 2
+name: registry
+output: dist
+
+image: ghcr.io/cat-of-summer/connectionregistry---mcp-package:latest
+
+variants: [cpu]
+
+# База — образ node: рантайм сервера уже внутри, а nginx достраивается пакетом.
+base:
+  cpu: node:22-bookworm-slim
+
+network:
+  name: network
+  external: false
+
+port_range: [21000, 21999]
+
+globals: [NETWORK, INSTANCE, TZ, TRAEFIK_ENTRYPOINT, ACME_EMAIL]
+
+sources:
+  - {type: catalog, path: .}
+
+recipes:
+
+  nginx:
+    extends: nginx
+    families: [debian]
+
+    copy:
+      - {src: services/nginx/configs, dest: /etc/nginx/configs, kind: config, optional: false}
+    pre_init: []
+    post_init: []
+
+    # entrypoint.nginx.sh считает set_real_ip_from через `ip route`; на debian-базе
+    # команды `ip` нет — в исходном образе nginx:alpine её давал busybox.
+    +install: {debian: [iproute2]}
+    +match: {service: [nginx]}
+
+    # Имя контейнера внутри бандла не резолвится: сервисы делят network namespace.
+    post_copy:
+      - "sed -i 's|proxy_pass http://node[^:]*:|proxy_pass http://127.0.0.1:|g' /etc/nginx/configs/nginx.registry.conf"
+
+    port:
+      default: 80
+      configure:
+        type: nginx_conf
+        file: /etc/nginx/configs/nginx.registry.conf
+
+    +mount_kinds: {"/var/www/html": skip}
+
+  node:
+    priority: 70
+    match:
+      image: ["node", "node:*"]
+      service: [node]
+    families: [debian]
+
+    # Клиенты БД — для db_dump. pg_dump берётся из PGDG: дебиановский 15-й отказывается
+    # снимать дамп с сервера 16, а свежий клиент работает с любым сервером не новее себя.
+    install:
+      debian: [ca-certificates, curl, gnupg, default-mysql-client]
+    run:
+      debian:
+        - "curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/pgdg.gpg"
+        - "echo 'deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main' > /etc/apt/sources.list.d/pgdg.list"
+        - "apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 && rm -rf /var/lib/apt/lists/*"
+
+    # entrypoint модуля ставит зависимости при старте контейнера; в образе они запечены.
+    entrypoint: skip
+
+    copy:
+      - {src: data/package.json,      dest: /var/www/html/package.json,      kind: code, optional: false}
+      - {src: data/package-lock.json, dest: /var/www/html/package-lock.json, kind: code, optional: false}
+      - {src: data/src,               dest: /var/www/html/src,               kind: code, optional: false}
+      - {src: data/bin,               dest: /var/www/html/bin,               kind: code, optional: false}
+
+    post_copy:
+      - "cd /var/www/html && npm ci --omit=dev"
+      - "mkdir -p /var/www/html/registry /var/www/html/logs /var/www/html/uploads /var/www/html/artifacts"
+      - "chmod +x /var/www/html/bin/cr.mjs && ln -sf /var/www/html/bin/cr.mjs /usr/local/bin/cr"
+
+    port:
+      default: 8932
+      configure: {type: env_var, var: MCP_PORT}
+
+    supervisor:
+      - name: registry
+        command: npm run mcp:http
+        directory: /var/www/html
+        priority: 35
+        stopsignal: TERM
+        stopwaitsecs: 20
+        scalable: false
+        critical: true
+        environment:
+          MCP_PORT: "{port}"
+
+    readiness:
+      - type: http
+        target: "http://127.0.0.1:{port}/health"
+        timeout: 60
+
+    mount_kinds:
+      "/var/www/html": skip
+
+env:
+  TRAEFIK_ENABLE: value:true
+  EXTERNAL_ACCESS: prefix
+
+  # Язык описаний инструментов MCP: их читает модель, а не человек.
+  CR_LANG: value:ru
+
+# Состояние переживает docker pull: реестр с секретами, журнал, обмен файлами.
+volumes:
+  registry:  /var/www/html/registry
+  logs:      /var/www/html/logs
+  uploads:   /var/www/html/uploads
+  artifacts: /var/www/html/artifacts
+
+services:
+  traefik: {mode: off}
+  network: {mode: off}
+
+  app_nginx: {recipe: nginx}
+  app_node:  {recipe: node}

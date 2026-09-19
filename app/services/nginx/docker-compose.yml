@@ -1,0 +1,34 @@
+services:
+  nginx:
+    build:
+      context: .
+      dockerfile: services/nginx/Dockerfile.nginx
+      args:
+        NGINX_VERSION: ${NGINX_VERSION:-alpine}
+    hostname: nginx${INSTANCE}
+    container_name: nginx${INSTANCE}
+    restart: unless-stopped
+    ports:
+      - "${EXTERNAL_ACCESS:-127.0.0.1:8090:80}"
+    env_file: .env
+    networks:
+      - network
+    labels:
+      - "traefik.enable=${TRAEFIK_ENABLE:-true}"
+      - "traefik.http.routers.nginx${INSTANCE}.rule=Host(`${TRAEFIK_DOMAIN:-localhost}`)"
+      - "traefik.http.routers.nginx${INSTANCE}.entrypoints=${TRAEFIK_ENTRYPOINT:-web}"
+      - "traefik.http.routers.nginx${INSTANCE}.priority=100"
+      - "traefik.http.routers.nginx${INSTANCE}.service=nginx${INSTANCE}"
+      - "traefik.http.services.nginx${INSTANCE}.loadbalancer.server.port=80"
+      - "traefik.http.routers.nginx-redirect${INSTANCE}.rule=Host(`${TRAEFIK_DOMAIN:-localhost}`)"
+      - "traefik.http.routers.nginx-redirect${INSTANCE}.entrypoints=web"
+      - "traefik.http.routers.nginx-redirect${INSTANCE}.service=nginx${INSTANCE}"
+      - "traefik.http.routers.nginx-redirect${INSTANCE}.priority=10"
+      - "traefik.http.routers.nginx-redirect${INSTANCE}.middlewares=redir-nginx${INSTANCE}@docker"
+      - "traefik.http.middlewares.redir-nginx${INSTANCE}.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redir-nginx${INSTANCE}.redirectscheme.permanent=true"
+
+networks:
+  network:
+    external: true
+    name: ${NETWORK:-network}

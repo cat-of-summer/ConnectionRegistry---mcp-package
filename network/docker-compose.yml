@@ -1,0 +1,14 @@
+services:
+  network:
+    image: alpine
+    hostname: ${NETWORK}
+    container_name: ${NETWORK}_handler
+    command: sleep infinity
+    restart: unless-stopped
+    networks:
+      - network
+
+networks:
+  network:
+    external: false
+    name: ${NETWORK}

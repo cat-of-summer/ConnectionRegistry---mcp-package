@@ -1,0 +1,32 @@
+services:
+  traefik:
+    image: traefik:${TRAEFIK_VERSION}
+    hostname: traefik
+    container_name: traefik
+    restart: unless-stopped
+    command:
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.tls.certresolver=letsencrypt"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.network=${NETWORK}"
+      - "--api.insecure=${TRAEFIK_API}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "${EXTERNAL_ACCESS}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data:/letsencrypt
+    networks:
+      - network
+    labels:
+      - "traefik.enable=false"
+
+networks:
+  network:
+    external: true
+    name: ${NETWORK}

@@ -1,0 +1,86 @@
+# Мишени для сквозной проверки реестра: сервер с SSH и две базы за ним.
+#
+# Базы стоят в отдельной сети, к которой реестр не подключён, и наружу не
+# публикуются. Это не осторожность, а суть проверки: если db_query отвечает,
+# значит он дошёл до базы через SSH-туннель, а не по прямой сети.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   docker compose -f docker-compose.test.yml down -v
+
+services:
+  sshd_test:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: sshd_test
+    hostname: sshd_test
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD_ACCESS=true
+      - USER_NAME=tester
+      - USER_PASSWORD=tester-пароль-стенда
+      - SUDO_ACCESS=false
+    volumes:
+      - ./test-fixtures/sshd/10-enable-forwarding.sh:/custom-cont-init.d/10-enable-forwarding.sh:ro
+    networks:
+      - network
+      - behind
+
+  # Второй сервер того же проекта: вход по ключу, который тест сам заводит через
+  # реестр. Так проверяется и «у проекта несколько SSH-подключений», и key auth.
+  sshd_dev:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: sshd_dev
+    hostname: sshd_dev
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD_ACCESS=true
+      - USER_NAME=deploy
+      - USER_PASSWORD=dev-stand-password
+      - SUDO_ACCESS=false
+    volumes:
+      - ./test-fixtures/sshd/10-enable-forwarding.sh:/custom-cont-init.d/10-enable-forwarding.sh:ro
+    networks:
+      - network
+
+  postgres_test:
+    image: postgres:16-alpine
+    container_name: postgres_test
+    hostname: postgres_test
+    environment:
+      - POSTGRES_USER=shop
+      - POSTGRES_PASSWORD=shop-пароль-стенда
+      - POSTGRES_DB=shop
+    networks:
+      - behind
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql_test:
+    image: mysql:8.4
+    container_name: mysql_test
+    hostname: mysql_test
+    environment:
+      - MYSQL_ROOT_PASSWORD=root-пароль-стенда
+      - MYSQL_DATABASE=shop
+      - MYSQL_USER=shop
+      - MYSQL_PASSWORD=shop-пароль-стенда
+    networks:
+      - behind
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot-пароль-стенда"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+networks:
+  network:
+    external: true
+    name: ${NETWORK:-network}
+  behind:
+    name: cr_behind
