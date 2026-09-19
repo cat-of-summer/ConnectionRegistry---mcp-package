@@ -1,6 +1,7 @@
 node_modules/
-registry/
-logs/
-uploads/
-artifacts/
+# Состояние стенда — только в корне: без «/» правило съедало и src/registry/.
+/registry/
+/logs/
+/uploads/
+/artifacts/
 docs/tools*.md
