@@ -7,14 +7,17 @@
 в терминале.
 
 Реестр двухуровневый: отдельно **хосты** (адрес, пользователь, ключ или пароль, отпечаток
-хост-ключа), отдельно **подключения**, которые на хост ссылаются. Один сервер — один набор
-кредов, поверх него сколько угодно точек входа: шелл, файлы, пара контейнеров, база. У одного
-проекта хостов может быть несколько: `shop/prod` и `shop/dev` — два сервера, один проект.
+хост-ключа), отдельно **подключения**, которые на хост ссылаются. Алиас у обоих одинаковой
+формы — `проект/имя`: и сервер, и точка входа живут в проекте. Один сервер — один набор кредов,
+поверх него сколько угодно точек входа: шелл, файлы, пара контейнеров, база. У одного проекта
+хостов может быть несколько: `shop/prod` и `shop/dev` — два сервера, один проект.
 
-Запись агент делает с **разрешения человека**: один раз за сессию и один раз на проект, дальше
-внутри проекта вопросов нет. Чтение не спрашивается никогда, а каждое действие целиком, вместе
-с выводом, попадает в **журнал**. Рядом живут **заметки по проектам** — путь до кода на сервере,
-версия PHP, имя контейнера с очередью, — чтобы агент не выяснял это заново каждую сессию.
+Запись агент делает с **разрешения человека**. Что именно спрашивается, задаётся
+[политикой](#подтверждения) в `CR_POLICY`: базовая спрашивает разрешение на запись раз за сессию
+и раз на проект, лояльная — доступ к проекту и отдельно право писать на сервер. Каждое действие
+целиком, вместе с выводом, попадает в **журнал**. Рядом живут **заметки по проектам** — путь до
+кода на сервере, версия PHP, имя контейнера с очередью, — чтобы агент не выяснял это заново
+каждую сессию.
 
 ---
 
@@ -193,30 +196,37 @@ docker, audit), `minimal` (только registry). `registry_info` и `help` е�
 ## Первые хосты
 
 Заводить доступы может и человек через `cr`, и агент через инструменты `host_set` / `conn_set`
-/ `secret_set` — такая правка спрашивает человека каждый раз. Начать проще руками.
+/ `secret_set` — при базовой политике такая правка спрашивает человека каждый раз, при лояльной
+входит в доступ к проекту. Начать проще руками.
 
 Секреты передаются **файлом или через stdin**, не аргументом: аргументы видны в `ps` и в
 истории шелла. Из-под Windows это ещё и единственный надёжный путь — кириллица в аргументах
 `docker exec` доезжает искажённой, файл в смонтированном каталоге доезжает как есть.
 
 ```sh
-# хост: адрес, пользователь, пароль или ключ
-docker compose exec node cr host add shop-prod --address 203.0.113.10 --user deploy --key-file /var/www/html/uploads/id_ed25519
-docker compose exec -T node cr host add shop-dev --address 10.0.0.5 --user deploy --password - < dev.pw
+# хосты проекта: адрес, пользователь, пароль или ключ
+docker compose exec node cr host add shop/srv-prod --address 203.0.113.10 --user deploy --key-file /var/www/html/uploads/id_ed25519
+docker compose exec -T node cr host add shop/srv-dev --address 10.0.0.5 --user deploy --password - < dev.pw
 
-# подключения поверх хоста: алиас всегда «проект/точка»
-docker compose exec node cr conn add shop/prod       --kind shell  --host shop-prod --config '{"cwd":"/var/www/shop"}'
-docker compose exec node cr conn add shop/dev        --kind shell  --host shop-dev
-docker compose exec node cr conn add shop/files      --kind files  --host shop-prod --config '{"proto":"sftp","root":"/var/www/shop"}'
-docker compose exec node cr conn add shop/queue      --kind docker --host shop-prod --config '{"container":"shop_queue","composeFile":"/opt/shop/docker-compose.yml"}'
-docker compose exec -T node cr conn add shop/db      --kind db     --host shop-prod --password - < db.pw \
+# подключения поверх хоста: алиас той же формы «проект/точка»
+docker compose exec node cr conn add shop/prod       --kind shell  --host shop/srv-prod --config '{"cwd":"/var/www/shop"}'
+docker compose exec node cr conn add shop/dev        --kind shell  --host shop/srv-dev
+docker compose exec node cr conn add shop/files      --kind files  --host shop/srv-prod --config '{"proto":"sftp","root":"/var/www/shop"}'
+docker compose exec node cr conn add shop/queue      --kind docker --host shop/srv-prod --config '{"container":"shop_queue","composeFile":"/opt/shop/docker-compose.yml"}'
+docker compose exec -T node cr conn add shop/db      --kind db     --host shop/srv-prod --password - < db.pw \
     --config '{"engine":"postgres","database":"shop","username":"shop"}'
 ```
+
+Алиас хоста — той же формы, что у подключения: `проект/имя`. Сервер принадлежит проекту, и
+разрешение на проект распространяется на него. Общий на два проекта сервер бывает: подключение
+может сослаться на чужой хост, и тогда `host_list` показывает это в `usedBy`, а правка такого
+хоста спрашивает разрешение у каждого задетого проекта.
 
 `cr host add` с уже существующим алиасом правит его: поля, которых нет в команде, остаются
 прежними — сменить порт можно, не повторяя пароль.
 
-Первое подключение к хосту показывает отпечаток его ключа и просит подтвердить. Если отпечаток
+Ключ хоста, увиденный впервые, закрепляется молча: сверять его не с чем. Смысл проверки в том,
+что будет дальше — расхождение с закреплённым ключом отклоняется без вопросов. Если отпечаток
 известен заранее, его задают сразу: `--host-key SHA256:…`.
 
 **База за SSH.** У `shop/db` есть хост, поэтому реестр ходит к базе через SSH-туннель:
@@ -236,6 +246,10 @@ docker compose exec -T node cr conn add shop/db      --kind db     --host shop-p
 ### Подтверждения
 
 Человека спрашивают редко и по делу: разрешение выдаётся не на действие, а на область работы.
+Какая именно область — решает политика, она задаётся `CR_POLICY` в `app/.env`. Политик две, и
+обе описаны ниже; `help approvals` и `registry_info` всегда рассказывают про действующую.
+
+#### `CR_POLICY=base` — базовая
 
 **Чтение не спрашивается никогда** — список файлов, `SELECT`, логи контейнера, заметки, журнал.
 
@@ -253,8 +267,29 @@ docker compose exec -T node cr conn add shop/db      --kind db     --host shop-p
 `conn_remove`. Это не работа внутри проекта, а изменение того, куда и чем реестр вообще может
 ходить, поэтому разрешение на проект их не покрывает.
 
+#### `CR_POLICY=loyal` — лояльная
+
+Вопросов меньше, и они идут в том порядке, в котором человек и принимает решение: сначала
+«с каким проектом работаем», потом «пускаем ли на запись».
+
+1. **Доступ к проекту** — на первом же обращении к нему, даже на чтение. Доступ открывает
+   чтение через подключения проекта и всю работу с реестром внутри: заметки, подключения,
+   секреты. Секреты при этом только кладутся — прочитать их по-прежнему нельзя ничем.
+2. **Запись на хост** — на первом изменяющем вызове через его подключения. Одно разрешение
+   покрывает весь сервер сразу: `shop/prod` спрашивается один раз и на шелл, и на файлы, и на
+   docker, и на базу. Другой хост спросит отдельно.
+
+Проект, которого в реестре ещё нет, агент заводит сам и получает к нему доступ без вопроса:
+спрашивать «пустить ли тебя туда, куда ты только что кладёшь» нечего. Ничего не спрашивают
+обзорные инструменты — `help`, `registry_info`, `conn_list`, `host_list`, `notes_search`,
+журнал: без них агент не понял бы, к какому проекту просить доступ.
+
+Отказ по проекту закрывает проект целиком, отказ по хосту — только запись на него.
+
+#### Общее для обеих
+
 Разрешения живут в памяти и умирают вместе с сессией MCP: новая сессия спрашивает заново. Что
-уже выдано, показывает `registry_info`.
+уже выдано и какая политика действует, показывает `registry_info`.
 
 Сначала спрашивает сам клиент агента — штатным механизмом MCP elicitation. Если клиент этого не
 умеет, заявка встаёт в очередь на `http://127.0.0.1:8090/approvals`, а вызов ждёт решения до
@@ -468,6 +503,7 @@ docker compose up -d --build
 |---|---|
 | `CR_MASTER_KEY`, `CR_MASTER_KEY_FILE` | мастер-ключ шифрования секретов — значением или файлом |
 | `CR_LANG` | язык описаний инструментов: `ru`, `en`, `auto` |
+| `CR_POLICY` | политика подтверждений: `base` или `loyal`, по умолчанию `base` |
 | `CR_APPROVE_TIMEOUT` | сколько секунд ждать решения человека, по умолчанию 300 |
 | `CR_LOG_MAX_BYTES` | потолок журнала, по умолчанию 1 ГБ |
 | `CR_LOG_FILE_BYTES` | размер одного файла журнала, по умолчанию 64 МБ |
@@ -516,12 +552,12 @@ docker compose -f docker-compose.test.yml down -v
 cd app
 printf '%s' 'tester-пароль-стенда' > data/uploads/host.pw
 printf '%s' 'shop-пароль-стенда'   > data/uploads/db.pw
-docker compose exec node cr host add demo --address sshd_test --port 2222 --user tester --password-file uploads/host.pw
-docker compose exec node cr conn add demo/shell  --kind shell  --host demo --config '{"cwd":"/config"}'
-docker compose exec node cr conn add demo/files  --kind files  --host demo --config '{"proto":"sftp","root":"/config"}'
-docker compose exec node cr conn add demo/docker --kind docker --host demo --config '{"container":"app"}'
-docker compose exec node cr conn add demo/db     --kind db --host demo --password-file uploads/db.pw --config '{"engine":"postgres","address":"postgres_test","database":"shop","username":"shop"}'
-docker compose exec node cr conn add demo/mysql  --kind db --host demo --password-file uploads/db.pw --config '{"engine":"mysql","address":"mysql_test","database":"shop","username":"shop"}'
+docker compose exec node cr host add demo/srv --address sshd_test --port 2222 --user tester --password-file uploads/host.pw
+docker compose exec node cr conn add demo/shell  --kind shell  --host demo/srv --config '{"cwd":"/config"}'
+docker compose exec node cr conn add demo/files  --kind files  --host demo/srv --config '{"proto":"sftp","root":"/config"}'
+docker compose exec node cr conn add demo/docker --kind docker --host demo/srv --config '{"container":"app"}'
+docker compose exec node cr conn add demo/db     --kind db --host demo/srv --password-file uploads/db.pw --config '{"engine":"postgres","address":"postgres_test","database":"shop","username":"shop"}'
+docker compose exec node cr conn add demo/mysql  --kind db --host demo/srv --password-file uploads/db.pw --config '{"engine":"mysql","address":"mysql_test","database":"shop","username":"shop"}'
 rm data/uploads/host.pw data/uploads/db.pw
 ```
 
