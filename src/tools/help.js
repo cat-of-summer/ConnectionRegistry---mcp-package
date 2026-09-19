@@ -7,6 +7,8 @@ import { listHosts } from '../registry/hosts.js';
 import { listConnections, projects } from '../registry/connections.js';
 import { logSize } from '../audit/log.js';
 import { pendingCount } from '../approve/queue.js';
+import { snapshot } from '../approve/grants.js';
+import { upgradeSteps } from '../update.js';
 import { poolState } from '../transport/ssh.js';
 
 const GROUP = 'service';
@@ -19,7 +21,8 @@ export const TOPICS = {
       'Порядок обычной задачи:',
       '  1. conn_list — какие алиасы есть. notes_get — что уже известно про проект.',
       '  2. Инструмент по типу подключения: ssh_exec (shell), files_* (files), docker_* (docker), db_* (db).',
-      '  3. Изменяющее действие спрашивает подтверждение у человека и целиком пишется в журнал.',
+      '  3. Запись спрашивает разрешение — один раз за сессию и один раз на проект — и целиком',
+      '     пишется в журнал. Чтение не спрашивает ничего.',
       '',
       'Разделы help: aliases, approvals, files, db, docker, notes, audit, security.',
     ].join('\n'),
@@ -62,26 +65,36 @@ export const TOPICS = {
 
   approvals: pick({
     ru: [
-      'Изменяющее действие выполняется только после разрешения человека.',
+      'Человека спрашивают редко и по делу.',
+      '',
+      'Чтение не спрашивается никогда: conn_list, files_list/read/get, docker_ps/logs, SELECT, журнал.',
+      '',
+      'Запись спрашивается дважды за сессию и больше не спрашивается:',
+      '  1. первый изменяющий вызов — «разрешить этой сессии менять что-либо»;',
+      '  2. первая запись в каждый проект — «разрешить запись в проект X».',
+      'Дальше внутри разрешённого проекта вопросов нет. Отказ на втором вопросе оставляет проект',
+      'только на чтение до конца сессии: повторно о нём не спрашивают, сразу отвечают отказом.',
+      '',
+      'Каждый раз спрашиваются только доступы: host_set, host_remove, secret_set, conn_set, conn_remove.',
+      'Это не работа внутри проекта, а изменение того, куда и чем реестр может ходить.',
       '',
       'Сначала спрашивает сам клиент (elicitation MCP). Если клиент этого не умеет, заявка встаёт',
       `в очередь на странице ${cfg.publicBaseUrl}/approvals и вызов ждёт до`,
       `${Math.round(cfg.approveTimeoutMs / 1000)} с. Не дождался — отказ, и это тоже запись в журнале.`,
       '',
-      'Что спрашивается: ssh_exec, ssh_script, docker_exec/restart/compose, files_put/move/remove/mkdir/chmod,',
-      'изменяющий db_query, любая правка реестра и заметок, а также первый хост-ключ.',
-      'Что не спрашивается: чтение — conn_list, files_list/read/get, docker_ps/logs, SELECT, журнал.',
-      '',
-      'У подключения бывает своя политика: always — спрашивать даже на чтении, never — не спрашивать',
-      'вовсе (для локальных и тестовых), writes — по умолчанию.',
+      'Что уже разрешено этой сессии, показывает registry_info.',
     ].join('\n'),
     en: [
-      'A mutating action runs only after the human allows it.',
+      'The human is asked rarely and only where it matters.',
       '',
-      'The client is asked first (MCP elicitation). If it cannot ask, the request goes to the queue at',
-      `${cfg.publicBaseUrl}/approvals and the call waits up to ${Math.round(cfg.approveTimeoutMs / 1000)}s.`,
+      'Reads are never confirmed. Writes are confirmed twice per session: once for the session itself,',
+      'once per project. Inside a granted project there are no further questions; refusing the project',
+      'question leaves that project read-only until the session ends.',
       '',
-      'Per-connection policy: always, writes (default), never.',
+      'Access changes are confirmed every time: host_set, host_remove, secret_set, conn_set, conn_remove.',
+      '',
+      `If the client cannot ask, the request waits in the queue at ${cfg.publicBaseUrl}/approvals for`,
+      `${Math.round(cfg.approveTimeoutMs / 1000)}s.`,
     ].join('\n'),
   }),
 
@@ -215,11 +228,13 @@ export const tools = [
     mutating: false,
     title: pick({ ru: 'Состояние реестра', en: 'Registry state' }),
     description: pick({
-      ru: 'Версия, пути, поднятый набор инструментов, состояние мастер-ключа, сколько заведено хостов '
-        + 'и подключений, размер журнала, висящие подтверждения. Сюда идут, когда инструмент ответил '
-        + 'странно: часто ответ в том, что реестр заперт или подтверждение ждёт человека.',
-      en: 'Version, paths, active tool set, master key state, how many hosts and connections exist, '
-        + 'journal size, pending approvals. Check here when a tool answers oddly.',
+      ru: 'Версия и доступность обновления с порядком его установки, пути, поднятый набор '
+        + 'инструментов, состояние мастер-ключа, что уже разрешено этой сессии, сколько заведено '
+        + 'хостов и подключений, размер журнала, висящие подтверждения. Сюда идут, когда инструмент '
+        + 'ответил странно: часто ответ в том, что реестр заперт или подтверждение ждёт человека.',
+      en: 'Version and available update with upgrade steps, paths, active tool set, master key state, '
+        + 'what this session is already allowed to do, how many hosts and connections exist, journal '
+        + 'size, pending approvals. Check here when a tool answers oddly.',
     }),
     input: {},
     run: (_args, { ctx }) => {
@@ -229,6 +244,11 @@ export const tools = [
       return {
         data: {
           версия: cfg.version,
+          // Порядок обновления кладём прямо сюда: уведомление без инструкции заставляет
+          // агента гадать или искать документацию снаружи.
+          обновление: ctx?.update
+            ? { ...ctx.update, upgrade: ctx.update.upgrade || upgradeSteps(ctx.update.latest) }
+            : { updateAvailable: null, unavailable: 'проверка не выполнялась' },
           язык: LANG,
           инструменты: { группы: ctx?.groups || ['все'], сколько: ctx?.toolCount ?? null },
           мастерКлюч: key.unlocked ? 'есть' : `нет (${key.reason})`,
@@ -238,7 +258,7 @@ export const tools = [
             проектов: projects().length,
           },
           подтверждения: {
-            политикаПоУмолчанию: cfg.defaultConfirmPolicy,
+            выданоВЭтойСессии: snapshot(ctx?.sessionId),
             таймаутСекунд: Math.round(cfg.approveTimeoutMs / 1000),
             ждут: pendingCount(),
             клиентУмеетСпрашивать: Boolean(caps?.elicitation),

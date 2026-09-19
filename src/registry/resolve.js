@@ -42,7 +42,6 @@ export function resolve(alias) {
     config,
     host,
     port: effectivePort(row.kind, config, hostRow),
-    confirm: row.confirm_policy,
     // Пароль самого подключения: база, ftp
     secret: () => readSecret(row.secret_id),
     hasSecret: Boolean(row.secret_id),

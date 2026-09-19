@@ -7,6 +7,7 @@ import path from 'node:path';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-manifest-'));
 process.env.CR_ROOT = root;
 process.env.CR_MASTER_KEY = 'ключ-для-манифеста';
+process.env.CR_UPDATE_CHECK = '0';
 
 const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
@@ -19,7 +20,7 @@ const { ALL, GROUPS, select } = await import('../src/tools/groups.js');
 const MANIFEST_BUDGET = 30_000;
 
 async function connect(spec) {
-  const { server } = createServer({ spec });
+  const { server } = await createServer({ spec });
   const client = new Client({ name: 'test', version: '0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -83,7 +84,7 @@ test('неизвестная группа называет существующ�
 
 test('у каждого изменяющего инструмента есть текст для человека', () => {
   for (const tool of ALL) {
-    if (!tool.mutating && !tool.alwaysConfirm) continue;
+    if (!tool.mutating && !tool.everyTime) continue;
     if (typeof tool.mutating === 'function') {
       assert.ok(tool.summary, `${tool.name}: нет summary, человеку нечего показать`);
       continue;

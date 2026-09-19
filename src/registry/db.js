@@ -46,7 +46,6 @@ const MIGRATIONS = [
         host_id        INTEGER REFERENCES hosts(id),
         config         TEXT NOT NULL DEFAULT '{}',          -- JSON без секретов
         secret_id      INTEGER REFERENCES secrets(id),
-        confirm_policy TEXT NOT NULL DEFAULT 'inherit',     -- inherit | always | writes | never
         note           TEXT,
         created_at     TEXT NOT NULL,
         updated_at     TEXT NOT NULL
@@ -80,6 +79,13 @@ const MIGRATIONS = [
       );
       CREATE INDEX approvals_status ON approvals(status);
     `);
+  },
+
+  // 2 — разрешения перестали быть свойством подключения: теперь их даёт человек на
+  // сессию и на проект, и живут они в памяти, а не в реестре.
+  (db) => {
+    const columns = db.prepare('PRAGMA table_info(connections)').all().map((c) => c.name);
+    if (columns.includes('confirm_policy')) db.exec('ALTER TABLE connections DROP COLUMN confirm_policy');
   },
 ];
 

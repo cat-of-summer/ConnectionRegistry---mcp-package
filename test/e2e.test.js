@@ -71,8 +71,15 @@ test('команда выполняется после согласия чело
   assert.equal(res.isError, false, res.text);
   assert.equal(res.json.exitCode, 0);
   assert.match(res.json.stdout, /tester/);
-  assert.equal(asked.length, 1, 'человека спросили ровно один раз');
-  assert.match(asked[0], /id -un/, 'ему показали саму команду');
+  // Первая запись в свежей сессии: вопрос про сессию и вопрос про проект, оба с командой в тексте.
+  assert.equal(asked.length, 2, asked.join(' | '));
+  assert.match(asked[0], /этой сессии/);
+  assert.match(asked[0], /id -un/, 'человеку показали само действие');
+  assert.match(asked[1], /проект «demo»/);
+
+  const again = await call(client, 'ssh_exec', { alias: 'demo/shell', command: 'echo second' });
+  assert.equal(again.isError, false, again.text);
+  assert.equal(asked.length, 2, 'внутри разрешённого проекта вопросов больше нет');
 });
 
 test('отказ человека — это отказ, а не выполнение', { skip: !enabled }, async (t) => {
@@ -80,7 +87,7 @@ test('отказ человека — это отказ, а не выполне�
   const res = await call(client, 'ssh_exec', { alias: 'demo/shell', command: 'touch /config/не-должно-появиться' });
 
   assert.equal(res.isError, true);
-  assert.match(res.text, /человек отказал/);
+  assert.match(res.text, /запись в этой сессии запрещена/);
 
   const { client: second } = await connect(t, 'accept');
   const check = await call(second, 'files_list', { alias: 'demo/files', path: '.' });
@@ -91,22 +98,32 @@ test('отказ человека — это отказ, а не выполне�
 
 test('клиент без elicitation ждёт решения на странице подтверждений', { skip: !enabled }, async (t) => {
   const { client } = await connect(t, null);
+
+  // Заявки прошлых прогонов, ещё не дождавшиеся ответа, не должны путаться под ногами.
+  const before = new Set((await (await fetch(`${BASE}/api/approvals`)).json()).pending.map((item) => item.id));
+
   const pending = call(client, 'ssh_exec', { alias: 'demo/shell', command: 'echo из-очереди' });
 
-  // Заявка должна появиться в очереди — её и видит человек в браузере.
-  let queued = null;
-  for (let i = 0; i < 40 && !queued; i++) {
-    const list = await (await fetch(`${BASE}/api/approvals`)).json();
-    queued = list.pending.find((item) => item.summary.includes('из-очереди'));
-    if (!queued) await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  assert.ok(queued, 'заявка встала в очередь');
+  // В свежей сессии их две: про саму сессию и про проект. Отвечаем, как человек на странице.
+  const seen = [];
+  for (let i = 0; i < 60 && seen.length < 2; i++) {
+    const list = (await (await fetch(`${BASE}/api/approvals`)).json()).pending
+      .filter((item) => !before.has(item.id) && !seen.some((s) => s.id === item.id));
 
-  await fetch(`${BASE}/api/approvals/${queued.id}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ decision: 'approved' }),
-  });
+    for (const item of list) {
+      seen.push(item);
+      await fetch(`${BASE}/api/approvals/${item.id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ decision: 'approved' }),
+      });
+    }
+    if (seen.length < 2) await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  assert.equal(seen.length, 2, seen.map((s) => s.summary).join(' | '));
+  assert.match(seen[0].summary, /этой сессии/);
+  assert.match(seen[1].summary, /проект «demo»/);
 
   const res = await pending;
   assert.equal(res.isError, false, res.text);
@@ -124,7 +141,7 @@ test('чтение базы идёт сразу, запись — после с�
 
   const drop = await call(client, 'db_query', { alias: 'demo/db', sql: 'drop table if exists e2e' });
   assert.equal(drop.isError, false, drop.text);
-  assert.equal(asked.length, 1, 'на DROP спросили');
+  assert.equal(asked.length, 2, 'на DROP спросили про сессию и про проект');
 
   const create = await call(client, 'db_query', { alias: 'demo/db', sql: 'create table e2e (id int)' });
   assert.equal(create.isError, false, create.text);
@@ -245,13 +262,14 @@ test('заметки пишутся с подтверждением и чита�
   const { client, asked } = await connect(t, 'accept');
 
   await call(client, 'notes_set', { project: 'demo', key: 'php.version', value: '8.3' });
-  assert.equal(asked.length, 1, 'на запись заметки спросили');
+  assert.equal(asked.length, 2, 'первая запись в сессии: про сессию и про проект');
 
   const read = await call(client, 'notes_get', { project: 'demo' });
   assert.equal(read.json.facts['php.version'], '8.3');
-  assert.equal(asked.length, 1, 'на чтение — нет');
+  assert.equal(asked.length, 2, 'на чтение — нет');
 
   await call(client, 'notes_set', { project: 'demo', key: 'php.version', value: '8.4' });
+  assert.equal(asked.length, 2, 'вторая запись в том же проекте проходит молча');
   const updated = await call(client, 'notes_get', { project: 'demo' });
   assert.equal(updated.json.facts['php.version'], '8.4', 'факт заменяется, а не дублируется');
 
@@ -305,7 +323,7 @@ test('у проекта несколько SSH-подключений: prod по
     alias: 'shop/prod-files', kind: 'files', host: 'shop-prod', config: { proto: 'sftp', root: '/config' },
   });
   assert.equal(files.isError, false, files.text);
-  assert.equal(asked.length, 5, 'каждая правка реестра спросила человека');
+  assert.equal(asked.length, 5, 'правка доступов спрашивается каждый раз, разрешение проекта её не покрывает');
 
   const list = await call(client, 'conn_list', { project: 'shop' });
   assert.deepEqual(list.json.connections.map((c) => `${c.alias}→${c.host}`).sort(),

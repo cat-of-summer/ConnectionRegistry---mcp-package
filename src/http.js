@@ -63,7 +63,7 @@ async function handleMcp(req, res, spec) {
 
   let built;
   try {
-    built = createServer({ spec });
+    built = await createServer({ spec });
   } catch (err) {
     return send(res, 404, { error: err.message });
   }

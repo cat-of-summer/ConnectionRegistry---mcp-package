@@ -2,7 +2,6 @@ import { z } from 'zod';
 
 export const KINDS = ['shell', 'files', 'docker', 'db'];
 export const AUTH_KINDS = ['password', 'key', 'agent'];
-export const CONFIRM_POLICIES = ['inherit', 'always', 'writes', 'never'];
 export const DB_ENGINES = ['postgres', 'mysql', 'mariadb'];
 export const FILE_PROTOCOLS = ['sftp', 'ftp', 'ftps'];
 

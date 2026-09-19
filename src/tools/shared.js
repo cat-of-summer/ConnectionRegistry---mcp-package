@@ -33,10 +33,16 @@ function isMutating(def, args) {
   return typeof def.mutating === 'function' ? Boolean(def.mutating(args)) : Boolean(def.mutating);
 }
 
-export function wrap(def, ctx) {
-  return async (args = {}) => {
+export function wrap(def, sessionCtx) {
+  return async (args = {}, extra = {}) => {
+    // Вопрос человеку привязывается к этому вызову: без requestId SDK шлёт его в фоновый
+    // поток сессии, а если клиент его ещё не открыл — молча выбрасывает, и вызов висит.
+    const ctx = { ...sessionCtx, requestId: extra.requestId, sessionId: extra.sessionId ?? sessionCtx.sessionId };
     const alias = typeof args.alias === 'string' ? args.alias : null;
-    const entry = audit.start({ tool: def.name, alias, args, kind: def.group });
+    // Проект — левая часть алиаса либо явный параметр заметок: на нём держится
+    // разрешение «работать с этим проектом».
+    const project = alias ? alias.split('/')[0] : (typeof args.project === 'string' ? args.project : null);
+    const entry = audit.start({ tool: def.name, alias: alias ?? project, args, kind: def.group });
 
     let resolved = null;
     let secrets = [];
@@ -53,21 +59,16 @@ export function wrap(def, ctx) {
         entry.target = resolved.host ? resolved.host.alias : (resolved.config.address || null);
       }
 
-      const mutating = isMutating(def, args);
-      const policy = resolved?.confirm;
-
-      if (gate.needsApproval({ mutating, always: def.alwaysConfirm, policy })
-        || (!mutating && gate.alwaysAsks(policy))) {
-        const summary = def.summary ? def.summary(args, resolved) : `${def.name}${alias ? ` на ${alias}` : ''}`;
-        entry.approval = await gate.approve(ctx, {
-          tool: def.name,
-          alias,
-          summary,
-          details: def.details ? def.details(args, resolved) : undefined,
-        });
-      } else {
-        entry.approval = { required: false };
-      }
+      const summary = def.summary ? def.summary(args, resolved) : `${def.name}${alias ? ` на ${alias}` : ''}`;
+      entry.approval = await gate.authorize(ctx, {
+        tool: def.name,
+        alias,
+        project,
+        mutating: isMutating(def, args),
+        everyTime: def.everyTime,
+        summary,
+        details: def.details ? def.details(args, resolved) : undefined,
+      });
 
       // Список секретов собираем после подтверждения: до него расшифровка не нужна.
       if (resolved) secrets = secretValues(resolved);
@@ -75,7 +76,7 @@ export function wrap(def, ctx) {
       const result = await def.run(args, {
         ctx,
         resolved,
-        approveHostKey: makeHostKeyApprover(ctx, resolved, def.name),
+        approveHostKey: makeHostKeyApprover(resolved),
       });
 
       const payload = result?.data ?? result ?? null;
@@ -107,23 +108,15 @@ export function wrap(def, ctx) {
 }
 
 /**
- * Новый хост-ключ закрепляется только после подтверждения человека, расхождение с
- * закреплённым не спрашивается вовсе — так выглядит подмена сервера.
+ * Ключ хоста, увиденного впервые, закрепляется молча: спрашивать нечего, сверять не с
+ * чем. Смысл проверки в том, что будет дальше — расхождение с закреплённым ключом
+ * отклоняется без вопросов, и это видно в журнале.
  */
-function makeHostKeyApprover(ctx, resolved, toolName) {
+function makeHostKeyApprover(resolved) {
   if (!resolved?.host) return undefined;
 
   return async (fp) => {
     const host = resolved.host;
-    await gate.approve(ctx, {
-      tool: toolName,
-      alias: resolved.alias,
-      summary: `Хост «${host.alias}» (${host.address}) виден впервые. Закрепить его ключ?`,
-      details: {
-        отпечаток: fp,
-        'что это значит': 'Дальше реестр будет отказываться подключаться, если ключ сменится.',
-      },
-    });
     pinHostKey(host.alias, fp);
     host.hostKey = fp;
     host.hostKeyStatus = 'pinned';

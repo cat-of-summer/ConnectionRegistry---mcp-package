@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { pick } from '../i18n.js';
 import { listHosts, upsertHost, removeHost, hostUsage } from '../registry/hosts.js';
 import { listConnections, getConnection, upsertConnection, removeConnection, projects } from '../registry/connections.js';
-import { KINDS, AUTH_KINDS, CONFIRM_POLICIES, DB_ENGINES, FILE_PROTOCOLS } from '../registry/schema.js';
+import { KINDS, AUTH_KINDS, DB_ENGINES, FILE_PROTOCOLS } from '../registry/schema.js';
 import { putSecret, replaceSecret } from '../registry/crypto.js';
 import { db } from '../registry/db.js';
 import { resolve } from '../registry/resolve.js';
@@ -38,9 +38,9 @@ export const tools = [
     title: pick({ ru: 'Подробности подключения', en: 'Connection details' }),
     description: pick({
       ru: 'Всё, что известно об алиасе, кроме секретов: адрес, пользователь, способ входа, отпечаток '
-        + 'хост-ключа, политика подтверждений. Пароль и ключ не отдаёт ни один инструмент.',
+        + 'хост-ключа, настройки. Пароль и ключ не отдаёт ни один инструмент.',
       en: 'Everything known about an alias except secrets: address, user, auth kind, host key fingerprint, '
-        + 'confirmation policy. No tool ever returns a password or a key.',
+        + 'settings. No tool ever returns a password or a key.',
     }),
     input: { alias: z.string().describe(pick({ ru: 'алиас вида project/name', en: 'alias like project/name' })) },
     run: (args) => {
@@ -66,7 +66,7 @@ export const tools = [
   {
     name: 'host_set',
     group: GROUP,
-    alwaysConfirm: true,
+    everyTime: true,
     mutating: true,
     title: pick({ ru: 'Завести или изменить хост', en: 'Create or update a host' }),
     description: pick({
@@ -99,7 +99,7 @@ export const tools = [
   {
     name: 'host_remove',
     group: GROUP,
-    alwaysConfirm: true,
+    everyTime: true,
     mutating: true,
     title: pick({ ru: 'Убрать хост', en: 'Remove a host' }),
     description: pick({
@@ -114,7 +114,7 @@ export const tools = [
   {
     name: 'conn_set',
     group: GROUP,
-    alwaysConfirm: true,
+    everyTime: true,
     mutating: true,
     title: pick({ ru: 'Завести или изменить подключение', en: 'Create or update a connection' }),
     description: pick({
@@ -153,10 +153,6 @@ export const tools = [
           + 'db — engine, database, username',
       })),
       password: z.string().optional().describe(pick({ ru: 'пароль базы или ftp', en: 'database or ftp password' })),
-      confirm: z.enum(CONFIRM_POLICIES).optional().describe(pick({
-        ru: 'когда спрашивать человека: always, writes (по умолчанию), never',
-        en: 'when to ask the human: always, writes (default), never',
-      })),
       note: z.string().optional(),
     },
     summary: (args) => `Завести или изменить подключение «${args.alias}» в реестре`,
@@ -167,7 +163,7 @@ export const tools = [
   {
     name: 'conn_remove',
     group: GROUP,
-    alwaysConfirm: true,
+    everyTime: true,
     mutating: true,
     title: pick({ ru: 'Убрать подключение', en: 'Remove a connection' }),
     description: pick({
@@ -182,7 +178,7 @@ export const tools = [
   {
     name: 'secret_set',
     group: GROUP,
-    alwaysConfirm: true,
+    everyTime: true,
     mutating: true,
     title: pick({ ru: 'Положить секрет', en: 'Store a secret' }),
     description: pick({

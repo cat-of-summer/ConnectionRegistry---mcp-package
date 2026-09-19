@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 
 process.env.CR_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-docs-'));
 process.env.CR_MASTER_KEY = process.env.CR_MASTER_KEY || 'docs';
+// Сборка не ходит в интернет за версиями: справочник от этого не зависит.
+process.env.CR_UPDATE_CHECK = '0';
 
 const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
 const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js');
@@ -18,7 +20,7 @@ const { createServer } = await import('../src/server.js');
 const { ALL, GROUPS, ALIASES } = await import('../src/tools/groups.js');
 const { LANG } = await import('../src/i18n.js');
 
-const { server } = createServer({ spec: 'all' });
+const { server } = await createServer({ spec: 'all' });
 const client = new Client({ name: 'docs', version: '0' });
 const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -57,9 +59,11 @@ function params(tool) {
 }
 
 function confirm(def) {
-  if (def.alwaysConfirm) return t('всегда', 'always');
-  if (typeof def.mutating === 'function') return t('если запрос изменяющий', 'when the statement mutates');
-  return def.mutating ? t('да', 'yes') : t('нет', 'no');
+  if (def.everyTime) return t('каждый раз', 'every call');
+  if (typeof def.mutating === 'function') {
+    return t('по разрешению на проект, если запрос изменяющий', 'under the project grant when the statement mutates');
+  }
+  return def.mutating ? t('по разрешению на сессию и проект', 'under the session and project grants') : t('нет', 'no');
 }
 
 const lines = [

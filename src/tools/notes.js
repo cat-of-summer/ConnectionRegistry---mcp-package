@@ -46,14 +46,13 @@ export const tools = [
   {
     name: 'notes_set',
     group: GROUP,
-    alwaysConfirm: true,
     mutating: true,
     title: pick({ ru: 'Записать заметку', en: 'Write a note' }),
     description: pick({
       ru: 'Кладёт факт «ключ — значение» (php.version = 8.3) либо заменяет свободный текст проекта. '
-        + 'Запись всегда проходит через подтверждение человека: заметки — его знание о проекте.',
+        + 'Запись входит в разрешение на проект: человек даёт его один раз за сессию.',
       en: 'Stores a key–value fact (php.version = 8.3) or replaces the project free-form text. '
-        + 'Writing always requires human confirmation: notes are the human’s knowledge of the project.',
+        + 'Writing falls under the project grant the human gives once per session.',
     }),
     input: {
       project: z.string(),
@@ -81,7 +80,6 @@ export const tools = [
   {
     name: 'notes_remove',
     group: GROUP,
-    alwaysConfirm: true,
     mutating: true,
     title: pick({ ru: 'Убрать заметку', en: 'Remove a note' }),
     description: pick({

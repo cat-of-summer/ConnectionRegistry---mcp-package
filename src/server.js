@@ -6,12 +6,13 @@ import { wrap } from './tools/shared.js';
 import { TOPICS } from './tools/help.js';
 import * as query from './audit/query.js';
 import { listConnections } from './registry/connections.js';
+import { checkForUpdate, updateNotice } from './update.js';
 
 // Инструкции клиент показывает модели при подключении. Здесь не список
 // инструментов — его модель и так видит, — а то, чего в списке не видно:
 // откуда начинать и что произойдёт при изменяющем вызове.
-function instructions(groups) {
-  return pick({
+function instructions(groups, notice) {
+  const text = pick({
     ru: [
       'Реестр подключений: доступы к серверам, базам, контейнерам и FTP заведены заранее и живут',
       'под алиасами вида «проект/точка». Пароли, ключи и строки подключения не покидают сервер —',
@@ -20,8 +21,11 @@ function instructions(groups) {
       'Начинайте с conn_list (какие алиасы есть) и notes_get (что уже известно про проект).',
       'Дальше инструмент по типу подключения: ssh_exec, files_*, docker_*, db_*.',
       '',
-      'Изменяющее действие сначала спрашивает разрешение у человека и целиком попадает в журнал.',
+      'Чтение не спрашивает ничего. На запись человек даёт разрешение один раз за сессию и один раз',
+      'на проект, дальше внутри проекта вопросов нет; правка хостов, секретов и подключений',
+      'спрашивается каждый раз. Всё целиком попадает в журнал.',
       'Отказ и таймаут — обычный исход, а не сбой: сообщите о нём и предложите, что делать.',
+      'Если проект оставили только на чтение, не пытайтесь обойти это другим инструментом.',
       '',
       `Подробности — help (разделы: ${Object.keys(TOPICS).join(', ')}), состояние — registry_info.`,
       `Поднятые группы инструментов: ${groups.join(', ')}.`,
@@ -34,24 +38,39 @@ function instructions(groups) {
       'Start with conn_list and notes_get, then use the tool for the connection kind:',
       'ssh_exec, files_*, docker_*, db_*.',
       '',
-      'A mutating action asks the human first and is journalled in full. A refusal or a timeout is a',
-      'normal outcome, not a failure.',
+      'Reads ask nothing. Writes need the human to grant them once per session and once per project;',
+      'after that there are no questions inside that project, while host, secret and connection edits',
+      'are confirmed every time. Everything is journalled in full. A refusal or a timeout is a normal',
+      'outcome, not a failure.',
       '',
       `Details — help (topics: ${Object.keys(TOPICS).join(', ')}), state — registry_info.`,
       `Active tool groups: ${groups.join(', ')}.`,
     ].join('\n'),
   });
+
+  // Уведомление об обновлении — частью инструкций, а не отдельным инструментом: агент должен
+  // увидеть его при подключении, не вызывая ничего.
+  return notice ? `${text}\n\n${notice}` : text;
 }
 
-export function createServer({ spec = 'all' } = {}) {
+/*
+ * Проверка обновлений запускается один раз на процесс и переживает переподключения: спрашивать
+ * GitHub на каждой новой сессии незачем. Упасть она не может — внутри таймаут и перехват любых
+ * отказов, — но и задержать запуск надолго тоже.
+ */
+let updatePromise = null;
+export const update = () => (updatePromise ??= checkForUpdate().catch(() => null));
+
+export async function createServer({ spec = 'all' } = {}) {
   const { groups, tools } = select(spec);
+  const updateState = await update();
 
   const server = new McpServer(
     { name: 'connection-registry', version: cfg.version },
-    { instructions: instructions(groups) },
+    { instructions: instructions(groups, updateNotice(updateState)) },
   );
 
-  const ctx = { server, groups, toolCount: tools.length };
+  const ctx = { server, groups, toolCount: tools.length, update: updateState };
 
   for (const def of tools) {
     server.registerTool(

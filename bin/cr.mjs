@@ -139,7 +139,6 @@ const COMMANDS = {
         host: args.host === 'none' ? null : args.host,
         config,
         password: secretFrom(args, 'password'),
-        confirm: args.confirm,
         note: args.note,
       }));
     }
@@ -234,7 +233,7 @@ const HELP = `cr — реестр подключений
   cr conn ls [--project <проект>] [--kind shell|files|docker|db]
   cr conn show <проект/имя>
   cr conn add  <проект/имя> --kind <тип> [--host <хост>|--host none] [--config '<json>']
-                            [--password-file <ф>] [--confirm always|writes|never] [--note …]
+                            [--password-file <ф>] [--note …]
   cr conn rm   <проект/имя>
 
   cr note get [<проект>]

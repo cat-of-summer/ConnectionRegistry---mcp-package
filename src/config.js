@@ -23,8 +23,6 @@ export const cfg = {
 
   // Подтверждения
   approveTimeoutMs: int('CR_APPROVE_TIMEOUT', 300) * 1000,
-  // Политика по умолчанию для подключения, у которого не задана своя
-  defaultConfirmPolicy: str('CR_CONFIRM_POLICY', 'writes'),
 
   // Журнал
   logMaxBytes: int('CR_LOG_MAX_BYTES', 1024 * 1024 * 1024),
@@ -42,7 +40,32 @@ export const cfg = {
   sshIdleMs: int('CR_SSH_IDLE_MS', 300_000),
   execTimeoutMs: int('CR_EXEC_TIMEOUT', 120_000),
 
-  version: str('CR_VERSION', str('BUNDLE_IMAGE', '').split(':').pop() || 'unknown'),
+  // Проверка обновлений. Выключается целиком — для контуров без выхода наружу, где запрос
+  // к GitHub всё равно упрётся в таймаут. Репозиторий и образ переопределяются для форков.
+  updateCheck: str('CR_UPDATE_CHECK', '1') !== '0',
+  updateRepo: str('CR_UPDATE_REPO', 'cat-of-summer/ConnectionRegistry---mcp-package'),
+  updateImage: str('CR_UPDATE_IMAGE', 'ghcr.io/cat-of-summer/connectionregistry---mcp-package'),
 };
+
+/**
+ * Версия стенда — это тег образа, и источник у него ровно один: BUNDLE_IMAGE из .env, тот самый
+ * ref, который правят руками при обновлении. Второй записи того же факта нет намеренно: версии
+ * кода, нумерующейся отдельно от релизов, не с чем сравнивать, и она только сбивает с толку.
+ */
+export function imageTag(ref = process.env.BUNDLE_IMAGE) {
+  const value = String(ref ?? '').trim();
+  if (!value) return null;
+
+  // Дайджест сильнее тега: ghcr.io/owner/app@sha256:… тега не несёт вовсе.
+  const name = value.split('@')[0];
+  const colon = name.lastIndexOf(':');
+  if (colon < 0) return null;
+
+  // Двоеточие в имени реестра — это порт (localhost:5000/app), а не тег: у тега слешей нет.
+  const tag = name.slice(colon + 1);
+  return tag && !tag.includes('/') ? tag : null;
+}
+
+cfg.version = imageTag() ?? 'unknown';
 
 export default cfg;

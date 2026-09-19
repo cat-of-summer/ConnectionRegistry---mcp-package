@@ -1,7 +1,7 @@
 import { db, now } from './db.js';
 import { replaceSecret, dropSecret } from './crypto.js';
 import { getHostRow, publicHost } from './hosts.js';
-import { assertAlias, normalizeConfig, KINDS, CONFIRM_POLICIES, DEFAULT_DB_PORT, DEFAULT_FILE_PORT } from './schema.js';
+import { assertAlias, normalizeConfig, KINDS, DEFAULT_DB_PORT, DEFAULT_FILE_PORT } from './schema.js';
 
 export function publicConnection(row, { host } = {}) {
   if (!row) return null;
@@ -13,7 +13,6 @@ export function publicConnection(row, { host } = {}) {
     host: host ? host.alias : null,
     config,
     hasSecret: Boolean(row.secret_id),
-    confirm: row.confirm_policy,
     note: row.note || null,
     updatedAt: row.updated_at,
   };
@@ -79,11 +78,6 @@ export function upsertConnection(input) {
       : replaceSecret(secretId, 'password', input.password);
   }
 
-  const confirm = input.confirm ?? existing?.confirm_policy ?? 'inherit';
-  if (!CONFIRM_POLICIES.includes(confirm)) {
-    throw new Error(`политика подтверждения «${confirm}» неизвестна, ожидается: ${CONFIRM_POLICIES.join(', ')}`);
-  }
-
   checkReachability(kind, config, hostRow, secretId);
 
   const ts = now();
@@ -94,19 +88,18 @@ export function upsertConnection(input) {
     host_id: hostRow ? hostRow.id : null,
     config: JSON.stringify(config),
     secret_id: secretId,
-    confirm_policy: confirm,
     note: input.note ?? existing?.note ?? null,
     updated_at: ts,
   };
 
   if (existing) {
     db().prepare(`UPDATE connections SET project = @project, kind = @kind, host_id = @host_id,
-      config = @config, secret_id = @secret_id, confirm_policy = @confirm_policy, note = @note,
+      config = @config, secret_id = @secret_id, note = @note,
       updated_at = @updated_at WHERE alias = @alias`).run(row);
   } else {
-    db().prepare(`INSERT INTO connections (alias, project, kind, host_id, config, secret_id, confirm_policy, note,
+    db().prepare(`INSERT INTO connections (alias, project, kind, host_id, config, secret_id, note,
       created_at, updated_at)
-      VALUES (@alias, @project, @kind, @host_id, @config, @secret_id, @confirm_policy, @note, @created_at, @updated_at)`)
+      VALUES (@alias, @project, @kind, @host_id, @config, @secret_id, @note, @created_at, @updated_at)`)
       .run({ ...row, created_at: ts });
   }
 

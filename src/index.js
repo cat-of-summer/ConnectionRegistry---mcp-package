@@ -20,7 +20,7 @@ async function main() {
   if (transport === 'stdio') {
     // В stdio адреса нет, и набор инструментов называют флагом.
     expireOrphans();
-    const { server } = createServer({ spec: arg('tools', 'all') });
+    const { server } = await createServer({ spec: arg('tools', 'all') });
     await server.connect(new StdioServerTransport());
     return;
   }
