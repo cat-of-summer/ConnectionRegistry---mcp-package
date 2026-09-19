@@ -1,0 +1,29 @@
+{
+  "name": "connection-registry-mcp",
+  "private": true,
+  "type": "module",
+  "description": "MCP-сервер и CLI: реестр подключений к серверам, БД, контейнерам и FTP",
+  "bin": {
+    "cr": "./bin/cr.mjs"
+  },
+  "scripts": {
+    "mcp:http": "node src/index.js --transport=http",
+    "mcp:stdio": "node src/index.js --transport=stdio",
+    "cr": "node bin/cr.mjs",
+    "test": "node --test \"test/*.test.js\"",
+    "docs": "node bin/gen-tools-doc.mjs && CR_LANG=en node bin/gen-tools-doc.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "basic-ftp": "^5.0.5",
+    "better-sqlite3": "^12.2.0",
+    "busboy": "^1.6.0",
+    "mysql2": "^3.11.5",
+    "pg": "^8.13.1",
+    "ssh2": "^1.16.0",
+    "zod": "^3.25.76"
+  }
+}
