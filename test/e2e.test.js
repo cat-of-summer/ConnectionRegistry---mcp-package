@@ -258,21 +258,30 @@ test('первый ключ хоста закреплён, подменённы�
 
 });
 
-test('заметки пишутся с подтверждением и читаются без него', { skip: !enabled }, async (t) => {
+test('факты пишутся с подтверждением и читаются без него, значения — по ключам', { skip: !enabled }, async (t) => {
   const { client, asked } = await connect(t, 'accept');
 
   await call(client, 'notes_set', { project: 'demo', key: 'php.version', value: '8.3' });
   assert.equal(asked.length, 2, 'первая запись в сессии: про сессию и про проект');
 
-  const read = await call(client, 'notes_get', { project: 'demo' });
+  const list = await call(client, 'notes_get', { project: 'demo' });
+  assert.ok(list.json.facts.some((f) => f.key === 'php.version'), 'ключ в списке');
+  assert.equal(list.text.includes('8.3'), false, 'значений в списке нет');
+
+  const read = await call(client, 'notes_get', { project: 'demo', keys: ['php.version'] });
   assert.equal(read.json.facts['php.version'], '8.3');
   assert.equal(asked.length, 2, 'на чтение — нет');
 
+  const found = await call(client, 'notes_search', { query: '8.3' });
+  assert.deepEqual(found.json.facts.map((f) => [f.project, f.key, f.matched]), [['demo', 'php.version', 'value']]);
+
   await call(client, 'notes_set', { project: 'demo', key: 'php.version', value: '8.4' });
   assert.equal(asked.length, 2, 'вторая запись в том же проекте проходит молча');
-  const updated = await call(client, 'notes_get', { project: 'demo' });
+  const updated = await call(client, 'notes_get', { project: 'demo', keys: ['php.version'] });
   assert.equal(updated.json.facts['php.version'], '8.4', 'факт заменяется, а не дублируется');
 
+  const long = await call(client, 'notes_set', { project: 'demo', key: 'deploy.steps', value: 'x'.repeat(500) });
+  assert.equal(long.isError, true, 'длинное значение не принимается');
 });
 
 test('запертый реестр не мешает читать метаданные', { skip: !enabled }, async (t) => {
@@ -300,8 +309,18 @@ test('у проекта несколько SSH-подключений: prod по
     await janitor.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`)));
     for (const alias of ['shop/prod', 'shop/dev', 'shop/prod-files']) await call(janitor, 'conn_remove', { alias });
     for (const alias of ['shop/srv-prod', 'shop/srv-dev']) await call(janitor, 'host_remove', { alias });
+    await call(janitor, 'project_remove', { project: 'shop' });
     await janitor.close();
   });
+
+  // Проект заводится раньше хостов — и только с рабочей директорией.
+  const bare = await call(client, 'project_set', { project: 'shop' });
+  assert.equal(bare.isError, true, 'проект без директории не заводится');
+  const project = await call(client, 'project_set', {
+    project: 'shop', comment: 'магазин', dirs: [{ path: '/srv/shop', comment: 'код, git' }],
+  });
+  assert.equal(project.isError, false, project.text);
+  assert.equal(asked.length, 2, 'первая запись в сессии: про сессию и про проект');
 
   // Агент заводит хосты и подключения сам — каждый шаг с подтверждением.
   const prodHost = await call(client, 'host_set', {
@@ -323,7 +342,7 @@ test('у проекта несколько SSH-подключений: prod по
     alias: 'shop/prod-files', kind: 'files', host: 'shop/srv-prod', config: { proto: 'sftp', root: '/config' },
   });
   assert.equal(files.isError, false, files.text);
-  assert.equal(asked.length, 5, 'правка доступов спрашивается каждый раз, разрешение проекта её не покрывает');
+  assert.equal(asked.length, 7, 'правка доступов спрашивается каждый раз, разрешение проекта её не покрывает');
 
   const list = await call(client, 'conn_list', { project: 'shop' });
   assert.deepEqual(list.json.connections.map((c) => `${c.alias}→${c.host}`).sort(),

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { pick } from '../i18n.js';
 import { listHosts, upsertHost, removeHost, hostUsage, hostProjects } from '../registry/hosts.js';
 import { listConnections, getConnection, upsertConnection, removeConnection, projects } from '../registry/connections.js';
+import { listProjects, upsertProject, removeDir, removeProject, COMMENT_MAX } from '../registry/projects.js';
 import { KINDS, AUTH_KINDS, DB_ENGINES, FILE_PROTOCOLS } from '../registry/schema.js';
 import { putSecret, replaceSecret } from '../registry/crypto.js';
 import { db } from '../registry/db.js';
@@ -12,7 +13,88 @@ import * as dbTransport from '../transport/db/index.js';
 
 const GROUP = 'registry';
 
+const dirSchema = z.object({
+  path: z.string().describe(pick({ ru: 'путь на этой машине', en: 'path on this machine' })),
+  comment: z.string().max(COMMENT_MAX).describe(pick({
+    ru: 'что там: «код Laravel, git, ветка dev», «compose стенда, WSL»',
+    en: 'what is there: "Laravel code, git, dev branch", "compose stack, WSL"',
+  })),
+}).strict();
+
 export const tools = [
+  {
+    name: 'project_list',
+    group: GROUP,
+    mutating: false,
+    title: pick({ ru: 'Список проектов', en: 'List projects' }),
+    description: pick({
+      ru: 'Проекты и их рабочие директории на этой машине: где код, compose, фронтенд. С этого '
+        + 'начинают: имя проекта — левая часть алиаса, директория — где работать.',
+      en: 'Projects and their working directories on this machine: code, compose, frontend. Start here: '
+        + 'the project name is the left part of an alias, the directory is where to work.',
+    }),
+    input: {},
+    run: () => ({ data: { projects: listProjects() } }),
+  },
+
+  {
+    name: 'project_set',
+    group: GROUP,
+    mutating: true,
+    title: pick({ ru: 'Завести или изменить проект', en: 'Create or update a project' }),
+    description: pick({
+      ru: 'Заводит проект раньше хостов, подключений и фактов. Новому нужна хотя бы одна рабочая '
+        + 'директория с комментарием. Директории сливаются по пути: вскрылся постоянный путь — гит '
+        + 'фронтенда, каталог compose — добавьте его сюда.',
+      en: 'Registers a project before its hosts, connections and facts. A new one needs at least one '
+        + 'working directory with a comment. Directories merge by path: found a permanent path — '
+        + 'frontend git, compose folder — add it here.',
+    }),
+    input: {
+      project: z.string().describe(pick({ ru: 'имя, одно слово строчными', en: 'name, one lowercase word' })),
+      comment: z.string().max(COMMENT_MAX).optional().describe(pick({ ru: 'что за проект, одной строкой', en: 'what the project is, one line' })),
+      dirs: z.array(dirSchema).optional().describe(pick({ ru: 'рабочие директории', en: 'working directories' })),
+    },
+    summary: (args) => `Завести или изменить проект «${args.project}»`,
+    details: (args) => ({
+      комментарий: args.comment,
+      директории: args.dirs?.map((d) => `${d.path} — ${d.comment}`),
+    }),
+    run: (args) => ({ data: upsertProject(args) }),
+  },
+
+  {
+    name: 'project_dir_remove',
+    group: GROUP,
+    mutating: true,
+    title: pick({ ru: 'Убрать директорию проекта', en: 'Remove a project directory' }),
+    description: pick({
+      ru: 'Убирает рабочую директорию. Последнюю не отдаёт: сначала добавьте другую.',
+      en: 'Removes a working directory. Refuses to remove the last one.',
+    }),
+    input: {
+      project: z.string(),
+      path: z.string(),
+    },
+    summary: (args) => `Убрать директорию «${args.path}» из проекта «${args.project}»`,
+    run: (args) => ({ data: removeDir(args.project, args.path) }),
+  },
+
+  {
+    name: 'project_remove',
+    group: GROUP,
+    everyTime: true,
+    mutating: true,
+    title: pick({ ru: 'Убрать проект', en: 'Remove a project' }),
+    description: pick({
+      ru: 'Удаляет проект с фактами и директориями. Откажет, пока есть его хосты или подключения.',
+      en: 'Deletes a project with its facts and directories. Refuses while it has hosts or connections.',
+    }),
+    input: { project: z.string() },
+    summary: (args) => `Убрать проект «${args.project}», его факты и директории из реестра`,
+    run: (args) => ({ data: removeProject(args.project) }),
+  },
+
   {
     name: 'conn_list',
     group: GROUP,

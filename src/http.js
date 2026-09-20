@@ -10,6 +10,7 @@ import { DIRS } from './paths.js';
 import { createServer } from './server.js';
 import * as queue from './approve/queue.js';
 import * as grants from './approve/grants.js';
+import { forgetSession as forgetNotesSession } from './registry/notes.js';
 import * as auditQuery from './audit/query.js';
 import { newUploadDir, describe, safeName } from './artifacts.js';
 import { approvalsPage, auditPage } from './web/pages.js';
@@ -80,6 +81,7 @@ async function handleMcp(req, res, spec) {
     // «Разрешено до конца сессии» обязано кончиться вместе с ней: без этого выданные
     // разрешения лежали бы в памяти до перезапуска процесса.
     grants.forget(transport.sessionId);
+    forgetNotesSession(transport.sessionId);
   };
 
   await built.server.connect(transport);

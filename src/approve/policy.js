@@ -18,7 +18,7 @@ const isRemote = (group) => REMOTE_GROUPS.includes(group);
 // не увидел бы, какие проекты есть, и не понял бы, к какому просить доступ. Журнал —
 // запись самого человека, и смотреть её он агенту не запрещал.
 const SURVEY_GROUPS = ['service', 'audit'];
-const SURVEY_TOOLS = ['conn_list', 'host_list', 'notes_search'];
+const SURVEY_TOOLS = ['project_list', 'conn_list', 'host_list', 'notes_search'];
 export const isSurvey = (call) => SURVEY_GROUPS.includes(call.group) || SURVEY_TOOLS.includes(call.tool);
 
 /** Проекты, которых касается вызов: свой плюс объявленные инструментом. */

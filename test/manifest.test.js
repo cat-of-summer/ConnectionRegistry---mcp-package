@@ -18,7 +18,8 @@ const { POLICIES } = await import('../src/approve/policy.js');
 // Манифест агент вычитывает при каждом подключении, до первого полезного действия.
 // Тест держит верхнюю границу и заодно ловит схему, которая не сворачивается в
 // JSON Schema: без него опечатка в описании инструмента валит сервер при зелёных тестах.
-const MANIFEST_BUDGET = 30_000;
+// Граница поднималась вместе с набором: четыре инструмента проектов добавили около 3 КБ.
+const MANIFEST_BUDGET = 34_000;
 
 async function connect(spec) {
   const { server } = await createServer({ spec });
@@ -115,7 +116,7 @@ test('обе политики отвечают на каждый инструм�
 
       const mutates = call.mutating || tool.everyTime;
       const survey = tool.group === 'service' || tool.group === 'audit'
-        || ['conn_list', 'host_list', 'notes_search'].includes(tool.name);
+        || ['project_list', 'conn_list', 'host_list', 'notes_search'].includes(tool.name);
       if (mutates && !survey) {
         assert.ok(steps.length, `${name}/${tool.name}: изменяющий вызов прошёл бы без разрешения`);
       }

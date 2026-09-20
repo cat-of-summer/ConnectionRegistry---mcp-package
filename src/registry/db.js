@@ -103,6 +103,37 @@ const MIGRATIONS = [
 
     db.exec('CREATE INDEX IF NOT EXISTS hosts_project ON hosts(project)');
   },
+
+  // 4 — проект стал сущностью. До этого он был левой частью алиаса и «возникал» первым
+  // хостом или заметкой; теперь у него есть строка, рабочие директории на машине человека
+  // и счётчик сессий, читавших его заметки. Свободный текст заметок уходит: остаются
+  // только короткие факты, чью жизнь можно измерить чтениями.
+  (db) => {
+    db.exec(`
+      CREATE TABLE projects (
+        name          TEXT PRIMARY KEY,
+        comment       TEXT,
+        read_sessions INTEGER NOT NULL DEFAULT 0,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+      );
+
+      CREATE TABLE project_dirs (
+        project    TEXT NOT NULL REFERENCES projects(name) ON DELETE CASCADE,
+        path       TEXT NOT NULL,
+        comment    TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (project, path)
+      );
+
+      ALTER TABLE notes_facts ADD COLUMN read_seq INTEGER NOT NULL DEFAULT 0;
+      DROP TABLE IF EXISTS notes_text;
+    `);
+    // Строки projects для прежних проектов не заводятся: проект без директорий противоречил
+    // бы собственному правилу. Их заводят руками через project_set — хосты, подключения и
+    // факты дождутся этого и до тех пор отказывают «проект не заведён».
+  },
 ];
 
 /**

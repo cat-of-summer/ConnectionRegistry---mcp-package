@@ -2,6 +2,9 @@ import { db, now } from './db.js';
 import { replaceSecret, dropSecret } from './crypto.js';
 import { getHostRow, publicHost } from './hosts.js';
 import { assertAlias, normalizeConfig, KINDS, DEFAULT_DB_PORT, DEFAULT_FILE_PORT } from './schema.js';
+import { requireProject } from './projects.js';
+
+export { projects } from './projects.js';
 
 export function publicConnection(row, { host } = {}) {
   if (!row) return null;
@@ -41,16 +44,9 @@ export function getConnection(alias) {
   return { ...publicConnection(row, { host }), hostInfo: host ? publicHost(host) : null };
 }
 
-export function projects() {
-  const fromConnections = db().prepare('SELECT DISTINCT project FROM connections').all().map((r) => r.project);
-  const fromFacts = db().prepare('SELECT DISTINCT project FROM notes_facts').all().map((r) => r.project);
-  const fromText = db().prepare('SELECT project FROM notes_text').all().map((r) => r.project);
-  return [...new Set([...fromConnections, ...fromFacts, ...fromText])].sort();
-}
-
 export function upsertConnection(input) {
   const alias = assertAlias(input.alias);
-  const project = alias.split('/')[0];
+  const project = requireProject(alias.split('/')[0]);
   const existing = getConnectionRow(alias);
 
   const kind = input.kind ?? existing?.kind;

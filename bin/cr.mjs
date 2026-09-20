@@ -7,7 +7,8 @@ import { db } from '../src/registry/db.js';
 import { keyState } from '../src/registry/crypto.js';
 import { listHosts, upsertHost, removeHost, pinHostKey, hostUsage } from '../src/registry/hosts.js';
 import { listConnections, getConnection, upsertConnection, removeConnection, projects } from '../src/registry/connections.js';
-import { getNotes, setFact, setText, removeFact } from '../src/registry/notes.js';
+import { listFacts, readFacts, setFact, removeFact } from '../src/registry/notes.js';
+import { listProjects, upsertProject, removeDir, removeProject } from '../src/registry/projects.js';
 import * as auditQuery from '../src/audit/query.js';
 import { logSize } from '../src/audit/log.js';
 
@@ -90,6 +91,31 @@ const COMMANDS = {
     print(crypto.randomBytes(32).toString('base64'));
   },
 
+  project(args) {
+    const [action, name] = args._;
+
+    if (!action || action === 'ls') return print(listProjects());
+
+    if (action === 'add' || action === 'set') {
+      if (!name) return die('cr project add <имя> --dir <путь> --comment <что там> [--about <о проекте>]');
+      const dirs = args.dir ? [{ path: args.dir, comment: args.comment }] : [];
+      return print(upsertProject({ project: name, comment: args.about, dirs }));
+    }
+
+    if (action === 'dir') {
+      const [, sub, project, dirPath] = args._;
+      if (sub === 'add' && dirPath) {
+        return print(upsertProject({ project, dirs: [{ path: dirPath, comment: args.comment }] }));
+      }
+      if (sub === 'rm' && dirPath) return print(removeDir(project, dirPath));
+      return die('cr project dir add <имя> <путь> --comment <что там>  |  cr project dir rm <имя> <путь>');
+    }
+
+    if (action === 'rm') return print(removeProject(name));
+
+    return die(`cr project: неизвестное действие «${action}»`);
+  },
+
   host(args) {
     const [action, alias] = args._;
 
@@ -155,11 +181,11 @@ const COMMANDS = {
 
     if (!action || action === 'get') {
       if (!project) return print({ projects: projects() });
-      return print(getNotes(project));
+      const keys = args._.slice(2);
+      return print(keys.length ? readFacts(project, keys) : listFacts(project));
     }
     if (action === 'set') {
-      if (args.text !== undefined) return print(setText(project, secretFrom(args, 'text')));
-      if (!key) return die('cr note set <проект> <ключ> <значение> | cr note set <проект> --text …');
+      if (!key) return die('cr note set <проект> <ключ> <значение>');
       return print(setFact(project, key, args._.slice(3).join(' ')));
     }
     if (action === 'rm') return print(removeFact(project, key));
@@ -226,6 +252,11 @@ const HELP = `cr — реестр подключений
   cr doctor                          состояние: ключ, база, каталоги, журнал
   cr key gen                         сгенерировать значение для CR_MASTER_KEY
 
+  cr project ls
+  cr project add <имя> --dir <путь> --comment <что там> [--about <о проекте>]
+  cr project dir add <имя> <путь> --comment <что там>  |  cr project dir rm <имя> <путь>
+  cr project rm <имя>                хосты и подключения проекта нужно убрать раньше
+
   cr host ls [--project <проект>]
   cr host add <проект/имя> --address <адрес> --user <логин> [--password | --password-file <ф> | --key-file <ф>]
                            [--port 22] [--passphrase-file <ф>] [--host-key SHA256:…] [--note …]
@@ -238,9 +269,8 @@ const HELP = `cr — реестр подключений
                             [--password-file <ф>] [--note …]
   cr conn rm   <проект/имя>
 
-  cr note get [<проект>]
+  cr note get [<проект> [<ключ> …]]   без ключей — список ключей, с ключами — значения
   cr note set <проект> <ключ> <значение>
-  cr note set <проект> --text -        свободный текст со stdin
   cr note rm  <проект> <ключ>
 
   cr log tail [--alias …] [--tool …] [--errors] [--limit 20]

@@ -5,6 +5,7 @@ import { createServer } from './server.js';
 import { start as startHttp } from './http.js';
 import { closeAll } from './transport/ssh.js';
 import { expireOrphans } from './approve/queue.js';
+import { sweepAll } from './registry/notes.js';
 
 const arg = (name, fallback) => {
   const found = process.argv.find((value) => value.startsWith(`--${name}=`));
@@ -14,6 +15,7 @@ const arg = (name, fallback) => {
 async function main() {
   ensureDirs();
   db(); // миграции прогоняются до первого запроса, а не на нём
+  sweepAll(); // просроченные факты уходят при старте, а не когда до них дойдёт чтение
 
   const transport = arg('transport', 'http');
 

@@ -1,6 +1,7 @@
 import { db, now } from './db.js';
 import { putSecret, replaceSecret, dropSecret } from './crypto.js';
 import { assertHostAlias, projectOf, AUTH_KINDS } from './schema.js';
+import { requireProject } from './projects.js';
 
 // Наружу уходит только это представление: ни одного поля, по которому можно
 // восстановить секрет. Отпечаток хост-ключа — публичная величина, он остаётся.
@@ -56,6 +57,7 @@ export function hostUsage(alias) {
  */
 export function upsertHost(input) {
   const alias = assertHostAlias(input.alias);
+  requireProject(projectOf(alias));
   const existing = getHostRow(alias);
 
   const authKind = input.auth ?? existing?.auth_kind ?? (input.privateKey ? 'key' : 'password');

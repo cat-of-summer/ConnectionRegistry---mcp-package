@@ -59,6 +59,10 @@ const addConn = old.prepare(`INSERT INTO connections (alias, project, kind, host
 addConn.run('adzhubey/dev-shell', 'adzhubey', idOf('adzhubey-dev'));
 addConn.run('shop/files', 'shop', idOf('bare'));
 
+// Заметки прежней схемы: факт остаётся, свободный текст уходит без переноса.
+old.prepare(`INSERT INTO notes_facts (project, key, value, updated_at) VALUES ('adzhubey', 'php.cli', '/opt/php84/bin/php', '${TS}')`).run();
+old.prepare(`INSERT INTO notes_text (project, body, updated_at) VALUES ('adzhubey', 'порядок деплоя', '${TS}')`).run();
+
 old.pragma('user_version = 2');
 old.close();
 
@@ -95,4 +99,18 @@ test('подключения остаются привязаны к тем же 
   const row = db().prepare(`SELECT h.alias FROM connections c JOIN hosts h ON h.id = c.host_id
                             WHERE c.alias = 'adzhubey/dev-shell'`).get();
   assert.equal(row.alias, 'adzhubey/dev');
+});
+
+test('проект стал строкой, но прежние имена не заводятся сами: их заведут с директориями', () => {
+  const tables = db().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+  assert.ok(tables.includes('projects') && tables.includes('project_dirs'));
+  assert.equal(db().prepare('SELECT count(*) AS n FROM projects').get().n, 0);
+});
+
+test('факты остались с нулевым возрастом, свободного текста больше нет', () => {
+  const fact = db().prepare("SELECT value, read_seq FROM notes_facts WHERE project = 'adzhubey' AND key = 'php.cli'").get();
+  assert.deepEqual(fact, { value: '/opt/php84/bin/php', read_seq: 0 });
+  const tables = db().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+  assert.equal(tables.includes('notes_text'), false);
+  assert.equal(db().pragma('user_version', { simple: true }), 4);
 });

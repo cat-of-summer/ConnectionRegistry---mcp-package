@@ -37,6 +37,12 @@ export const cfg = {
   // Потолок вывода одной команды в памяти: без него cat большого файла кладёт сервер
   maxOutputBytes: int('CR_MAX_OUTPUT_BYTES', 32 * 1024 * 1024),
 
+  // Заметки: факт — одна короткая строка; жизнь меряется сессиями, читавшими проект.
+  // Столько сессий без чтения значения — факт устаревший, ещё столько — удаляется сам.
+  notesValueMax: int('CR_NOTES_VALUE_MAX', 200),
+  notesStaleSessions: int('CR_NOTES_STALE_SESSIONS', 15),
+  notesExpireSessions: int('CR_NOTES_EXPIRE_SESSIONS', 5),
+
   // Транспорт
   sshIdleMs: int('CR_SSH_IDLE_MS', 300_000),
   execTimeoutMs: int('CR_EXEC_TIMEOUT', 120_000),

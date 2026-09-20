@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { pick } from '../i18n.js';
-import { getNotes, setFact, setText, removeFact, removeText, searchNotes } from '../registry/notes.js';
-import { projects } from '../registry/connections.js';
+import { cfg } from '../config.js';
+import { listFacts, readFacts, setFact, removeFact, searchNotes } from '../registry/notes.js';
+import { projects } from '../registry/projects.js';
 
 const GROUP = 'notes';
 
@@ -10,22 +11,31 @@ export const tools = [
     name: 'notes_get',
     group: GROUP,
     mutating: false,
-    title: pick({ ru: 'Заметки по проекту', en: 'Project notes' }),
+    title: pick({ ru: 'Факты о проекте', en: 'Project facts' }),
     description: pick({
-      ru: 'Технические факты о проекте и свободный текст: пути на сервере, версии, имена контейнеров, '
-        + 'порядок деплоя. Читать стоит до первого подключения — это дешевле, чем выяснять заново.',
-      en: 'Technical facts about a project plus free-form text: server paths, versions, container names, '
-        + 'deploy order. Worth reading before connecting anywhere — cheaper than rediscovering it.',
+      ru: 'Без keys — ключи фактов проекта без значений, недавно читанные сверху. С keys — значения: '
+        + `это чтение факта, оно продлевает ему жизнь. Не читанный ${cfg.notesStaleSessions} сессий помечен `
+        + `stale, ещё через ${cfg.notesExpireSessions} удаляется. Важный по имени stale-факт прочитайте и `
+        + 'замените или уберите.',
+      en: 'Without keys — the project fact keys without values, recently read first. With keys — values: '
+        + `that is reading a fact and extends its life. Unread for ${cfg.notesStaleSessions} sessions it is `
+        + `marked stale, after ${cfg.notesExpireSessions} more it is deleted. Read a stale fact whose key `
+        + 'matters, then replace or remove it.',
     }),
     input: {
       project: z.string().optional().describe(pick({
         ru: 'имя проекта — левая часть алиаса; без него вернётся список проектов',
         en: 'project name — the left part of an alias; omit to list projects',
       })),
+      keys: z.array(z.string()).optional().describe(pick({
+        ru: 'ключи, значения которых нужны задаче',
+        en: 'keys whose values the task needs',
+      })),
     },
-    run: (args) => {
+    run: (args, { ctx } = {}) => {
       if (!args.project) return { data: { projects: projects() } };
-      return { data: getNotes(args.project) };
+      if (args.keys?.length) return { data: readFacts(args.project, args.keys, ctx?.sessionId) };
+      return { data: listFacts(args.project, ctx?.sessionId) };
     },
   },
 
@@ -33,68 +43,56 @@ export const tools = [
     name: 'notes_search',
     group: GROUP,
     mutating: false,
-    title: pick({ ru: 'Поиск по заметкам', en: 'Search notes' }),
+    title: pick({ ru: 'Поиск по фактам', en: 'Search facts' }),
     description: pick({
-      ru: 'Ищет по ключам, значениям и свободному тексту всех проектов сразу. Так находят «где ещё '
-        + 'стоит php 7.4» или «в каком проекте этот путь».',
-      en: 'Searches keys, values and free-form text across all projects at once.',
+      ru: 'Фильтр по ключам и значениям во всех проектах или в одном. Отдаёт ключи и в чём совпало, '
+        + 'без значений: читают потом через notes_get с keys.',
+      en: 'Filters keys and values across all projects or within one. Returns keys and what matched, '
+        + 'no values: read them through notes_get with keys.',
     }),
-    input: { query: z.string() },
-    run: (args) => ({ data: searchNotes(args.query) }),
+    input: {
+      query: z.string().describe(pick({ ru: 'часть ключа или значения', en: 'part of a key or a value' })),
+      project: z.string().optional().describe(pick({ ru: 'искать только в этом проекте', en: 'search this project only' })),
+    },
+    run: (args) => ({ data: searchNotes(args.query, { project: args.project }) }),
   },
 
   {
     name: 'notes_set',
     group: GROUP,
     mutating: true,
-    title: pick({ ru: 'Записать заметку', en: 'Write a note' }),
+    title: pick({ ru: 'Записать факт', en: 'Write a fact' }),
     description: pick({
-      ru: 'Кладёт факт «ключ — значение» (php.version = 8.3) либо заменяет свободный текст проекта. '
-        + 'Запись входит в разрешение на проект: человек даёт его один раз за сессию.',
-      en: 'Stores a key–value fact (php.version = 8.3) or replaces the project free-form text. '
-        + 'Writing falls under the project grant the human gives once per session.',
+      ru: `Кладёт факт «ключ — значение»: одна строка до ${cfg.notesValueMax} символов о том, что нужно `
+        + 'для деплоя и операций на серверах проекта — путь, версия, имя контейнера. Тот же ключ — '
+        + 'замена значения.',
+      en: `Stores a key–value fact: one line up to ${cfg.notesValueMax} characters about what deploys and `
+        + 'server operations need — a path, a version, a container name. Same key replaces the value.',
     }),
     input: {
       project: z.string(),
-      key: z.string().optional().describe(pick({ ru: 'ключ факта, например deploy.path', en: 'fact key, e.g. deploy.path' })),
-      value: z.string().optional().describe(pick({ ru: 'значение факта', en: 'fact value' })),
-      text: z.string().optional().describe(pick({
-        ru: 'свободный текст проекта целиком — заменяет прежний',
-        en: 'the whole free-form text of the project — replaces the previous one',
-      })),
+      key: z.string().describe(pick({ ru: 'ключ факта, например deploy.path', en: 'fact key, e.g. deploy.path' })),
+      value: z.string().describe(pick({ ru: 'значение — одна строка', en: 'value — a single line' })),
     },
-    summary: (args) => (args.key
-      ? `Записать в заметки «${args.project}»: ${args.key} = ${args.value}`
-      : `Заменить свободный текст заметок проекта «${args.project}»`),
-    details: (args) => (args.text ? { текст: args.text.slice(0, 400) } : undefined),
-    run: (args) => {
-      if (args.key !== undefined) {
-        if (args.value === undefined) throw new Error('у факта должно быть значение');
-        return { data: setFact(args.project, args.key, args.value) };
-      }
-      if (args.text !== undefined) return { data: setText(args.project, args.text) };
-      throw new Error('нечего записывать: передайте key с value либо text');
-    },
+    summary: (args) => `Записать в заметки «${args.project}»: ${args.key} = ${args.value}`,
+    run: (args, { ctx } = {}) => ({ data: setFact(args.project, args.key, args.value, ctx?.sessionId) }),
   },
 
   {
     name: 'notes_remove',
     group: GROUP,
     mutating: true,
-    title: pick({ ru: 'Убрать заметку', en: 'Remove a note' }),
+    title: pick({ ru: 'Убрать факт', en: 'Remove a fact' }),
     description: pick({
-      ru: 'Удаляет один факт или свободный текст проекта. Факт, который перестал быть верным, '
-        + 'лучше заменить новым значением, а не удалять: следующая сессия будет искать его снова.',
-      en: 'Deletes a single fact or the project free-form text. A fact that stopped being true is '
-        + 'usually better replaced than deleted.',
+      ru: 'Удаляет факт. Факт, который перестал быть верным, лучше заменить новым значением, а не '
+        + 'удалять: следующая сессия будет искать его снова.',
+      en: 'Deletes a fact. A fact that stopped being true is usually better replaced than deleted.',
     }),
     input: {
       project: z.string(),
-      key: z.string().optional().describe(pick({ ru: 'ключ факта; без него убирается текст', en: 'fact key; omit to remove the text' })),
+      key: z.string().describe(pick({ ru: 'ключ факта', en: 'fact key' })),
     },
-    summary: (args) => (args.key
-      ? `Убрать факт «${args.key}» из заметок проекта «${args.project}»`
-      : `Убрать свободный текст заметок проекта «${args.project}»`),
-    run: (args) => ({ data: args.key ? removeFact(args.project, args.key) : removeText(args.project) }),
+    summary: (args) => `Убрать факт «${args.key}» из заметок проекта «${args.project}»`,
+    run: (args) => ({ data: removeFact(args.project, args.key) }),
   },
 ];

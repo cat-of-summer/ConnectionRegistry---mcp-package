@@ -16,10 +16,12 @@ const gate = await import('../src/approve/gate.js');
 const grants = await import('../src/approve/grants.js');
 const hosts = await import('../src/registry/hosts.js');
 const connections = await import('../src/registry/connections.js');
+const projects = await import('../src/registry/projects.js');
 
-// Реестр, на который опирается политика: проект считается заведённым, если у него есть
-// подключение или заметка. Без этого любой проект выглядел бы новым и доступ выдавался сам.
+// Реестр, на который опирается политика: заведённый проект — строка в projects. Без этого
+// любой проект выглядел бы новым и доступ выдавался сам.
 for (const project of ['shop', 'blog']) {
+  projects.upsertProject({ project, dirs: [{ path: `/srv/${project}`, comment: 'код' }] });
   hosts.upsertHost({ alias: `${project}/srv`, address: '10.0.0.1', user: 'deploy', password: 'пароль' });
   connections.upsertConnection({ alias: `${project}/prod`, kind: 'shell', host: `${project}/srv`, config: { cwd: '/srv' } });
   connections.upsertConnection({

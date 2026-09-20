@@ -19,8 +19,11 @@ function instructions(groups, notice) {
       'под алиасами вида «проект/точка». Пароли, ключи и строки подключения не покидают сервер —',
       'запрашивать их у человека не нужно и бесполезно: ни один инструмент их не возвращает.',
       '',
-      'Начинайте с conn_list (какие алиасы есть) и notes_get (что уже известно про проект).',
+      'Начинайте с project_list (какие проекты есть и где на этой машине их папки), conn_list (какие',
+      'алиасы) и notes_get (ключи фактов; значения нужных — тем же инструментом с keys).',
       'Дальше инструмент по типу подключения: ssh_exec, files_*, docker_*, db_*.',
+      'Новый проект заводится project_set с рабочей директорией — раньше хостов и подключений.',
+      'Вскрылся постоянный путь (гит фронтенда, каталог compose) — допишите его в project_set.',
       '',
       ...policy.short.ru,
       'Всё целиком попадает в журнал.',
@@ -35,8 +38,11 @@ function instructions(groups, notice) {
       'and lives under aliases like "project/entry". Passwords, keys and connection strings never leave',
       'the server — asking the human for them is pointless: no tool returns them.',
       '',
-      'Start with conn_list and notes_get, then use the tool for the connection kind:',
-      'ssh_exec, files_*, docker_*, db_*.',
+      'Start with project_list (projects and their folders on this machine), conn_list (aliases) and',
+      'notes_get (fact keys; values of the needed ones — same tool with keys). Then use the tool for',
+      'the connection kind: ssh_exec, files_*, docker_*, db_*.',
+      'A new project is registered with project_set and a working directory — before hosts and',
+      'connections. Found another permanent path (frontend git, compose folder) — add it there too.',
       '',
       ...policy.short.en,
       'Everything is journalled in full. A refusal or a timeout is a normal outcome, not a failure.',
@@ -157,11 +163,12 @@ function registerPrompts(server) {
         content: {
           type: 'text',
           text: pick({
-            ru: 'Возьми заметки проекта (notes_get) и проверь по ним состояние сервера: версии, пути, '
-              + 'контейнеры. Расхождения перечисли и предложи, какие факты в заметках обновить. '
-              + 'Изменяющих действий не делай.',
-            en: 'Take the project notes (notes_get) and verify the server against them: versions, paths, '
-              + 'containers. List the differences and suggest which facts to update. Do not change anything.',
+            ru: 'Возьми ключи фактов проекта (notes_get), прочитай значения тех, что про сервер (notes_get '
+              + 'с keys), и проверь по ним его состояние: версии, пути, контейнеры. Расхождения перечисли '
+              + 'и предложи, какие факты обновить. Изменяющих действий не делай.',
+            en: 'Take the project fact keys (notes_get), read the values of those about the server (notes_get '
+              + 'with keys) and verify the server against them: versions, paths, containers. List the '
+              + 'differences and suggest which facts to update. Do not change anything.',
           }),
         },
       }],
