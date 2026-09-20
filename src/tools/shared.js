@@ -1,9 +1,12 @@
 import { cfg } from '../config.js';
 import * as audit from '../audit/log.js';
 import * as gate from '../approve/gate.js';
-import { resolve, secretValues } from '../registry/resolve.js';
+import {
+  resolve, secretValues, projectSecretValues, readSecretRef, isSecretRef, SECRET_REF_KINDS,
+} from '../registry/resolve.js';
 import { pinHostKey } from '../registry/hosts.js';
 import { LockedError } from '../registry/crypto.js';
+import { scanArgs, describe } from '../secrets.js';
 
 // Общая рамка вокруг каждого инструмента: разобрать алиас, спросить человека,
 // выполнить, записать в журнал. Инструменты сами этим не занимаются — иначе
@@ -33,6 +36,65 @@ function isMutating(def, args) {
   return typeof def.mutating === 'function' ? Boolean(def.mutating(args)) : Boolean(def.mutating);
 }
 
+/** Проекты, которых касается вызов: свой плюс объявленные инструментом. */
+function touched(project, def, args, resolved) {
+  const declared = def.projects ? def.projects(args, resolved) : [];
+  return [...new Set([project, resolved?.project, ...declared])].filter(Boolean);
+}
+
+/**
+ * Секрет, присланный открытым текстом, отклоняется до вопроса человеку. Чистка журнала
+ * лечит половину беды: к этому месту ключ уже прошёл через контекст модели и транскрипт
+ * клиента, и отменить это нельзя. Поэтому отказ — и с подсказкой, как сделать правильно,
+ * иначе агент пойдёт искать обход.
+ *
+ * Отклоняются только однозначные находки (hard). Эвристики вроде `PGPASSWORD=…`
+ * маскируются в журнале, но работу не останавливают: цена ложной находки здесь —
+ * заблокированная команда.
+ */
+function refuseSecrets(def, args, resolved) {
+  if (!cfg.secretScan || !def.scan) return;
+
+  const found = scanArgs(args, def.scan).filter((f) => f.hard);
+  if (!found.length) return;
+
+  const example = resolved?.host?.alias || `${String(args.alias || 'проект/хост')}`;
+  const where = [...new Set(found.map((f) => f.field))].map((f) => `«${f}»`).join(', ');
+  const what = found.map((f) => describe(f)).join('; ');
+  const field = def.secretRefs?.[0];
+
+  const err = new Error(
+    `в ${where} лежит секрет открытым текстом (${what}). Через реестр секреты так не ходят: `
+    + 'вызов целиком ложится в журнал, а до журнала успевает пройти через контекст модели. '
+    + `Положите его один раз через secret_set и подставляйте ссылкой${field ? ` в «${field}»` : ''}: `
+    + `cr://secret/${example}#${SECRET_REF_KINDS.join('|')} — значение подставит сервер, `
+    + 'в журнал уйдёт ссылка.',
+  );
+  err.code = 'secret_in_args';
+  throw err;
+}
+
+/**
+ * Подставляет значения вместо ссылок cr://secret/…, уже после подтверждения. Поле
+ * подставляется целиком: подстановка внутри текста вернула бы секрет в произвольную
+ * строку, ради ухода от которой всё и затевалось.
+ */
+function fillSecretRefs(def, args, project) {
+  if (!def.secretRefs) return { args, values: [] };
+
+  let out = args;
+  const values = [];
+
+  for (const field of def.secretRefs) {
+    if (!isSecretRef(out[field])) continue;
+    const value = readSecretRef(out[field], { project });
+    out = { ...out, [field]: value };
+    values.push(value);
+  }
+
+  return { args: out, values };
+}
+
 export function wrap(def, sessionCtx) {
   return async (args = {}, extra = {}) => {
     // Вопрос человеку привязывается к этому вызову: без requestId SDK шлёт его в фоновый
@@ -42,7 +104,13 @@ export function wrap(def, sessionCtx) {
     // Проект — левая часть алиаса либо явный параметр заметок: на нём держится
     // разрешение «работать с этим проектом».
     const project = alias ? alias.split('/')[0] : (typeof args.project === 'string' ? args.project : null);
-    const entry = audit.start({ tool: def.name, alias: alias ?? project, args, kind: def.group });
+    const entry = audit.start({
+      tool: def.name,
+      alias: alias ?? project,
+      args,
+      kind: def.group,
+      secretArgs: def.secretArgs,
+    });
 
     let resolved = null;
     let secrets = [];
@@ -58,6 +126,10 @@ export function wrap(def, sessionCtx) {
         entry.kind = resolved.kind;
         entry.target = resolved.host ? resolved.host.alias : (resolved.config.address || null);
       }
+
+      // До вопроса человеку: иначе он подтвердит то, что всё равно не выполнится, а
+      // ssh_script успеет показать ему ключ в диалоге — details там сам скрипт.
+      refuseSecrets(def, args, resolved);
 
       const summary = def.summary ? def.summary(args, resolved) : `${def.name}${alias ? ` на ${alias}` : ''}`;
       entry.approval = await gate.authorize(ctx, {
@@ -78,9 +150,15 @@ export function wrap(def, sessionCtx) {
       });
 
       // Список секретов собираем после подтверждения: до него расшифровка не нужна.
+      // Берём и секреты всего проекта: пароль базы, попавший в эхо команды на шелле
+      // того же проекта, — такой же секрет, как креды самого подключения.
       if (resolved) secrets = secretValues(resolved);
+      secrets = [...new Set([...secrets, ...projectSecretValues(touched(project, def, args, resolved))])];
 
-      const result = await def.run(args, {
+      const filled = fillSecretRefs(def, args, resolved?.project ?? project);
+      secrets = [...new Set([...secrets, ...filled.values])];
+
+      const result = await def.run(filled.args, {
         ctx,
         resolved,
         approveHostKey: makeHostKeyApprover(resolved),
@@ -109,6 +187,8 @@ export function wrap(def, sessionCtx) {
       if (err.code === 'host_key') {
         return fail(err.message, { хост: err.host, ожидался: err.expected, пришёл: err.actual });
       }
+      // Отказ по секрету сам объясняет, что делать: прятать его за именем инструмента незачем.
+      if (err.code === 'secret_in_args') return fail(err.message);
       return fail(`${def.name}: ${err.message}`);
     }
   };

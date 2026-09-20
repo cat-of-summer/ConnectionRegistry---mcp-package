@@ -113,18 +113,25 @@ export const tools = [
     needsConnection: true,
     kinds: ['files'],
     mutating: true,
+    scan: ['content'],
+    secretRefs: ['content'],
     title: pick({ ru: 'Положить файл', en: 'Upload a file' }),
     description: pick({
       ru: 'Кладёт файл на сервер. Источник — адрес cr://uploads/…, полученный после загрузки файла '
-        + 'на /upload реестра, либо содержимое строкой в content. Требует подтверждения человека.',
+        + 'на /upload реестра, либо содержимое строкой в content. Ключ или пароль в content открытым '
+        + 'текстом отклоняется — вместо него ссылка cr://secret/<алиас>#вид. Требует подтверждения человека.',
       en: 'Puts a file on the server. The source is a cr://uploads/… address returned by the registry '
-        + '/upload endpoint, or inline text in content. Requires human confirmation.',
+        + '/upload endpoint, or inline text in content. A plaintext key or password in content is refused — '
+        + 'pass a cr://secret/<alias>#kind reference instead. Requires human confirmation.',
     }),
     input: {
       alias: z.string(),
       dest: z.string().describe(pick({ ru: 'путь назначения на сервере', en: 'destination path on the server' })),
       source: z.string().optional().describe(pick({ ru: 'cr://uploads/…', en: 'cr://uploads/…' })),
-      content: z.string().optional().describe(pick({ ru: 'содержимое текстом, если файл маленький', en: 'inline text for small files' })),
+      content: z.string().optional().describe(pick({
+        ru: 'содержимое текстом, если файл маленький; или cr://secret/<алиас>#private_key|password|passphrase',
+        en: 'inline text for small files; or cr://secret/<alias>#private_key|password|passphrase',
+      })),
     },
     summary: (args, resolved) => `Положить файл на «${args.alias}» (${resolved?.host?.address || resolved?.config?.address}): `
       + `${resolvePath(resolved, args.dest)}`,

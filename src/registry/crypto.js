@@ -11,6 +11,13 @@ const KEYCHECK_PLAIN = 'connection-registry';
 
 let cachedKey = null;
 
+// Расшифрованные значения помнятся до конца жизни процесса. Нужно это журналу:
+// он вычищает из вывода секреты всех подключений проекта, а не только того, через
+// которое шёл вызов, и платить за каждую такую чистку scrypt'ом по всем секретам
+// было бы дороже самой команды. Ключ шифрования тут же рядом, в cachedKey, так что
+// хуже от этого не становится.
+const plaintexts = new Map();
+
 function masterSecret() {
   if (cfg.masterKeyFile) {
     try {
@@ -109,19 +116,32 @@ export function putSecret(kind, plaintext) {
 
 export function readSecret(id) {
   if (!id) return null;
+  if (plaintexts.has(id)) return plaintexts.get(id);
+
   const row = db().prepare('SELECT value FROM secrets WHERE id = ?').get(id);
   if (!row) return null;
-  return open(key(), row.value);
+
+  const value = open(key(), row.value);
+  plaintexts.set(id, value);
+  return value;
+}
+
+/** Вид секрета под этим id: по нему сверяется ссылка cr://secret/…#вид. */
+export function secretKind(id) {
+  if (!id) return null;
+  return db().prepare('SELECT kind FROM secrets WHERE id = ?').get(id)?.kind ?? null;
 }
 
 export function dropSecret(id) {
   if (!id) return;
+  plaintexts.delete(id);
   db().prepare('DELETE FROM secrets WHERE id = ?').run(id);
 }
 
 /** Заменяет значение существующего секрета, сохраняя id — ссылки на него не рвутся. */
 export function replaceSecret(id, kind, plaintext) {
   if (!id) return putSecret(kind, plaintext);
+  plaintexts.delete(id);
   db().prepare('UPDATE secrets SET kind = ?, value = ?, created_at = ? WHERE id = ?')
     .run(kind, seal(key(), plaintext), now(), id);
   return id;

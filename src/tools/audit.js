@@ -36,10 +36,10 @@ export const tools = [
     mutating: false,
     title: pick({ ru: 'Запись журнала целиком', en: 'Full journal entry' }),
     description: pick({
-      ru: 'Одна запись со всем, что было: аргументы, команда, stdout и stderr целиком. Секреты в ней '
-        + 'замаскированы, и это единственное, что из записи вырезано.',
-      en: 'A single entry with everything: arguments, command, full stdout and stderr. Secrets are '
-        + 'masked, and that is the only thing removed.',
+      ru: 'Одна запись со всем, что было: аргументы, команда, stdout и stderr целиком. Вырезаны только '
+        + 'секреты — на их месте примета: вид, длина, отпечаток.',
+      en: 'A single entry with everything: arguments, command, full stdout and stderr. Only secrets are '
+        + 'removed, each replaced by a marker: kind, length, fingerprint.',
     }),
     input: { id: z.string() },
     run: (args) => {

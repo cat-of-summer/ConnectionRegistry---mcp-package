@@ -373,6 +373,33 @@ test('у проекта несколько SSH-подключений: prod по
   assert.equal(onProd.isError, false, onProd.text);
   assert.match(onProd.json.stdout, /tester\s+sshd_test/);
 
+  // Сам ключ в журнал не попал — и в запись целиком тоже. Раньше он лежал там открытым
+  // текстом: поле зовётся value, и по имени его никто не прятал.
+  const stored = (await call(client, 'audit_query', { project: 'shop', tool: 'secret_set', limit: 1 })).json.entries[0];
+  const storedFull = await call(client, 'audit_show', { id: stored.id });
+  assert.equal(storedFull.text.includes('PRIVATE KEY'), false, 'ключ в записи secret_set');
+  assert.match(storedFull.json.args.value, /^••••\[private_key openssh, \d+ Б, sha256:/);
+
+  // Ключ открытым текстом в команде — отказ с подсказкой, а не выполнение.
+  const leak = await call(client, 'ssh_exec', { alias: 'shop/dev', command: `printf '%s' '${pair.private}' > /config/leak` });
+  assert.equal(leak.isError, true, 'ключ в команде прошёл');
+  assert.match(leak.text, /secret_set/);
+  assert.match(leak.text, /cr:\/\/secret\/shop\/srv-dev#/);
+
+  // Тот же ключ ссылкой: на сервер доезжает значение, в журнал — ссылка.
+  const put = await call(client, 'ssh_exec', {
+    alias: 'shop/dev',
+    command: 'cat > /config/id_test && wc -c < /config/id_test && rm /config/id_test',
+    stdin: 'cr://secret/shop/srv-dev#private_key',
+  });
+  assert.equal(put.isError, false, put.text);
+  assert.equal(Number(put.json.stdout.trim()), Buffer.byteLength(pair.private), 'на сервер доехал ключ целиком');
+
+  const putEntry = (await call(client, 'audit_query', { alias: 'shop/dev', tool: 'ssh_exec', limit: 1 })).json.entries[0];
+  const putFull = await call(client, 'audit_show', { id: putEntry.id });
+  assert.equal(putFull.json.args.stdin, 'cr://secret/shop/srv-dev#private_key');
+  assert.equal(putFull.text.includes('PRIVATE KEY'), false, 'ключ в записи ssh_exec');
+
   // Хост с живыми подключениями убрать нельзя — реестр называет, кто мешает.
   const blocked = await call(client, 'host_remove', { alias: 'shop/srv-dev' });
   assert.equal(blocked.isError, true);

@@ -3,26 +3,51 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { cfg } from '../config.js';
 import { DIRS, ensureDirs } from '../paths.js';
+import { redact, maskWhole } from '../secrets.js';
 
 // Журнал живёт файлами, без второй копии в базе: он растёт до гигабайта, а нужен
 // целиком и подряд. Одна строка JSONL — одно действие; крупный вывод уезжает в
 // соседний файл, иначе один db_dump растянул бы строку на сотни мегабайт и сломал
 // построчное чтение.
+//
+// Секрет прячется двумя путями сразу, и они закрывают разное. По имени поля —
+// там, где поле секретно целиком (password в host_set, value в secret_set). По
+// содержимому — везде, потому что приватный ключ, переданный в ssh_exec, лежит в
+// поле «command», и никакой список имён его не поймает. Третий путь, scrub, знает
+// конкретные значения из реестра и вычищает их из вывода, если пароль ушёл в эхо.
 
 const SECRET_KEYS = /^(password|passphrase|privatekey|private_key|secret|token|dsn|key)$/i;
 const MASK = '••••';
 
-export function maskArgs(value, depth = 0) {
+/**
+ * whole — имена полей, которые этот инструмент объявил секретными целиком.
+ * Список имён общий на всех, а «value» секретно только у secret_set: у notes_set
+ * поле с тем же именем — значение факта, и прятать его незачем.
+ */
+export function maskArgs(value, whole = [], depth = 0) {
   if (depth > 6 || value === null || value === undefined) return value ?? null;
-  if (Array.isArray(value)) return value.map((v) => maskArgs(v, depth + 1));
+  if (Array.isArray(value)) return value.map((v) => maskArgs(v, whole, depth + 1));
   if (typeof value === 'object') {
     const out = {};
     for (const [key, v] of Object.entries(value)) {
-      out[key] = SECRET_KEYS.test(key) ? MASK : maskArgs(v, depth + 1);
+      if (SECRET_KEYS.test(key) || whole.includes(key)) {
+        out[key] = v === null || v === undefined ? v ?? null : maskWhole(v, hintOf(key));
+        continue;
+      }
+      out[key] = maskArgs(v, whole, depth + 1);
     }
     return out;
   }
-  return value;
+  return typeof value === 'string' ? redact(value) : value;
+}
+
+function hintOf(key) {
+  const name = key.toLowerCase();
+  if (name === 'privatekey' || name === 'private_key') return 'private_key';
+  if (name === 'passphrase') return 'passphrase';
+  if (name === 'dsn') return 'connection_string';
+  if (name === 'token') return 'token';
+  return 'password';
 }
 
 /** Вычищает конкретные значения секретов из текста: пароль мог уйти в эхо команды. */
@@ -66,6 +91,23 @@ function blobPath(id, stream) {
 }
 
 /**
+ * Потоки записывает сам сервер, и они ходят через блоб всегда. Аргументы и команда
+ * приходят от агента и до сих пор шли в строку без всякого потолка: один files_put
+ * с мегабайтным content давал мегабайтную строку JSONL и ломал построчное чтение
+ * ровно так же, как это делал бы db_dump. Поля про блоб проставляются только когда
+ * он появился: у обычной записи их нет, и читается она как раньше.
+ */
+function attachIfBig(record, id, field, text, inline) {
+  if (Buffer.byteLength(text) <= cfg.logInlineBytes) return;
+
+  const stored = store(id, field, text);
+  record[field] = inline;
+  record[`${field}Bytes`] = stored.bytes;
+  record[`${field}Blob`] = stored.blob;
+  record[`${field}Truncated`] = true;
+}
+
+/**
  * Крупный вывод уходит в блоб, в строке остаётся начало и ссылка.
  * Возвращает {text, truncated, bytes, blob}.
  */
@@ -85,7 +127,7 @@ function store(id, stream, text) {
   };
 }
 
-export function start({ tool, alias, args, kind = null, target = null }) {
+export function start({ tool, alias, args, kind = null, target = null, secretArgs = [] }) {
   return {
     id: newId(),
     ts: new Date().toISOString(),
@@ -94,10 +136,13 @@ export function start({ tool, alias, args, kind = null, target = null }) {
     alias: alias ?? null,
     kind,
     target,
-    args: maskArgs(args ?? {}),
+    args: maskArgs(args ?? {}, secretArgs),
     approval: null,
   };
 }
+
+/** Сначала известные значения из реестра, потом всё, что похоже на секрет само по себе. */
+const clean = (text, secrets) => redact(scrub(text, secrets));
 
 export function finish(entry, outcome = {}) {
   const secrets = outcome.secrets || [];
@@ -113,12 +158,15 @@ export function finish(entry, outcome = {}) {
     ok: outcome.ok !== false,
     exitCode: outcome.exitCode ?? null,
     durationMs: Date.now() - entry.startedAt,
-    command: scrub(outcome.command ?? null, secrets),
-    error: scrub(outcome.error ?? null, secrets),
+    command: clean(outcome.command ?? null, secrets),
+    error: clean(outcome.error ?? null, secrets),
   };
 
-  const stdout = store(entry.id, 'stdout', scrub(outcome.stdout, secrets));
-  const stderr = store(entry.id, 'stderr', scrub(outcome.stderr, secrets));
+  attachIfBig(record, entry.id, 'args', JSON.stringify(record.args), { '…': 'аргументы целиком в блобе' });
+  if (record.command) attachIfBig(record, entry.id, 'command', record.command, record.command.slice(0, 2000));
+
+  const stdout = store(entry.id, 'stdout', clean(outcome.stdout, secrets));
+  const stderr = store(entry.id, 'stderr', clean(outcome.stderr, secrets));
   record.stdout = stdout.text;
   record.stdoutBytes = stdout.bytes;
   record.stdoutBlob = stdout.blob;
@@ -189,9 +237,16 @@ export function logSize() {
   return sum(DIRS.logs) + (fs.existsSync(DIRS.blobs) ? sum(DIRS.blobs) : 0);
 }
 
-export function readBlob(record, stream) {
-  const name = stream === 'stderr' ? record.stderrBlob : record.stdoutBlob;
-  if (!name) return stream === 'stderr' ? record.stderr : record.stdout;
+export function readBlob(record, field) {
+  const name = record[`${field}Blob`];
+  if (!name) return record[field];
   const file = path.join(DIRS.logs, name);
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+}
+
+/** Аргументы уехали в блоб JSON-текстом — вернуть их надо объектом, как в строке. */
+export function readArgs(record) {
+  if (!record.argsBlob) return record.args;
+  const raw = readBlob(record, 'args');
+  try { return JSON.parse(raw); } catch { return record.args; }
 }

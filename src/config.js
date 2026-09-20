@@ -25,6 +25,10 @@ export const cfg = {
   policy: str('CR_POLICY', 'base'),
   approveTimeoutMs: int('CR_APPROVE_TIMEOUT', 300) * 1000,
 
+  // Отказ на секрет, присланный открытым текстом. Выключается на случай ложной находки:
+  // маскирования в журнале это не отменяет — оно не выключается ничем.
+  secretScan: str('CR_SECRET_SCAN', '1') !== '0',
+
   // Журнал
   logMaxBytes: int('CR_LOG_MAX_BYTES', 1024 * 1024 * 1024),
   logFileBytes: int('CR_LOG_FILE_BYTES', 64 * 1024 * 1024),

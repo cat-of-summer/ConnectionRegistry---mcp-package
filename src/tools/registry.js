@@ -6,7 +6,7 @@ import { listProjects, upsertProject, removeDir, removeProject, COMMENT_MAX } fr
 import { KINDS, AUTH_KINDS, DB_ENGINES, FILE_PROTOCOLS } from '../registry/schema.js';
 import { putSecret, replaceSecret } from '../registry/crypto.js';
 import { db } from '../registry/db.js';
-import { resolve } from '../registry/resolve.js';
+import { resolve, isSecretRef } from '../registry/resolve.js';
 import { connect } from '../transport/ssh.js';
 import * as filesTransport from '../transport/files.js';
 import * as dbTransport from '../transport/db/index.js';
@@ -272,12 +272,16 @@ export const tools = [
     group: GROUP,
     everyTime: true,
     mutating: true,
+    // Поле value секретно целиком только здесь: у notes_set так зовётся значение факта.
+    secretArgs: ['value'],
     title: pick({ ru: 'Положить секрет', en: 'Store a secret' }),
     description: pick({
       ru: 'Кладёт пароль, приватный ключ или парольную фразу в реестр. Значение шифруется и наружу '
-        + 'не возвращается никогда — ни этим инструментом, ни любым другим.',
+        + 'не возвращается никогда — ни этим инструментом, ни любым другим. На сервер его потом '
+        + 'кладут ссылкой cr://secret/<алиас>#<вид> в ssh_exec (stdin) или files_put (content).',
       en: 'Stores a password, private key or passphrase. The value is encrypted and never returned by '
-        + 'this or any other tool.',
+        + 'this or any other tool. Later it goes to a server as a cr://secret/<alias>#<kind> reference '
+        + 'in ssh_exec (stdin) or files_put (content).',
     }),
     input: {
       target: z.enum(['host', 'connection']),
@@ -287,6 +291,10 @@ export const tools = [
     },
     summary: (args) => `Положить секрет (${args.kind}) для ${args.target === 'host' ? 'хоста' : 'подключения'} «${args.alias}»`,
     run: (args) => {
+      if (isSecretRef(args.value)) {
+        throw new Error('secret_set принимает само значение: перекладывать секрет из реестра в реестр незачем');
+      }
+
       if (args.target === 'host') {
         const patch = { alias: args.alias };
         if (args.kind === 'password') patch.password = args.value;

@@ -15,8 +15,16 @@ process.env.CR_LOG_MAX_BYTES = '12288';
 const log = await import('../src/audit/log.js');
 const query = await import('../src/audit/query.js');
 
+const PEM = [
+  '-----BEGIN OPENSSH PRIVATE KEY-----',
+  'b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtz',
+  '-----END OPENSSH PRIVATE KEY-----',
+].join('\n');
+
+const masked = /^••••\[[^\]]+, \d+ Б, sha256:[0-9a-f]{8}\]$/;
+
 test('поля с секретами маскируются по имени', () => {
-  const masked = log.maskArgs({
+  const out = log.maskArgs({
     alias: 'shop/db',
     password: 'hunter2',
     nested: { privateKey: '-----BEGIN', token: 'abc' },
@@ -24,12 +32,28 @@ test('поля с секретами маскируются по имени', ()
     command: 'ls -la',
   });
 
-  assert.equal(masked.password, '••••');
-  assert.equal(masked.nested.privateKey, '••••');
-  assert.equal(masked.nested.token, '••••');
-  assert.equal(masked.list[0].secret, '••••');
-  assert.equal(masked.command, 'ls -la');
-  assert.equal(masked.alias, 'shop/db');
+  // На месте секрета остаётся примета: вид, длина и отпечаток. По ней видно,
+  // один ли ключ ходил в двух записях, — при том что самого ключа в журнале нет.
+  assert.match(out.password, masked);
+  assert.match(out.nested.privateKey, masked);
+  assert.match(out.nested.token, masked);
+  assert.match(out.list[0].secret, masked);
+  assert.equal(out.command, 'ls -la');
+  assert.equal(out.alias, 'shop/db');
+});
+
+test('поле, секретное только у одного инструмента, объявляется им самим', () => {
+  // value у secret_set — приватный ключ, у notes_set — значение факта.
+  assert.match(log.maskArgs({ value: PEM }, ['value']).value, masked);
+  assert.equal(log.maskArgs({ value: 'php.version = 8.3' }).value, 'php.version = 8.3');
+});
+
+test('секрет ловится и там, где имя поля ничего не говорит', () => {
+  const out = log.maskArgs({ command: `echo '${PEM}' > id_ed25519`, stdin: PEM });
+
+  assert.equal(out.command.includes('BEGIN OPENSSH'), false, 'ключ остался в команде');
+  assert.equal(out.command.startsWith("echo '"), true, 'вырезан только ключ, а не вся команда');
+  assert.equal(out.stdin.includes('BEGIN OPENSSH'), false, 'ключ остался в stdin');
 });
 
 test('значение секрета вычищается из вывода', () => {
@@ -50,10 +74,34 @@ test('запись попадает в файл и читается обратн
   assert.equal(found.tool, 'ssh_exec');
   assert.equal(found.alias, 'shop/shell');
   assert.equal(found.stdout, 'uid=0(root)');
-  assert.equal(found.args.password, '••••');
+  assert.match(found.args.password, masked);
 
   const list = query.list({ alias: 'shop/shell', limit: 5 });
   assert.equal(list.entries[0].id, record.id);
+});
+
+test('крупные аргументы уезжают в блоб и возвращаются целиком', () => {
+  const big = 'y'.repeat(5000);
+  const entry = log.start({ tool: 'files_put', alias: 'shop/files', args: { dest: 'big.txt', content: big } });
+  const record = log.finish(entry, { ok: true, command: 'put big.txt', stdout: '', stderr: '' });
+
+  assert.equal(record.argsTruncated, true);
+  assert.ok(record.argsBlob, 'ссылка на блоб проставлена');
+  assert.ok(JSON.stringify(record.args).length < big.length, 'в строке журнала аргументов уже нет');
+
+  assert.equal(query.get(record.id).args.content, big);
+});
+
+test('обычная запись полей про блоб не заводит и читается как раньше', () => {
+  const entry = log.start({ tool: 'ssh_exec', alias: 'shop/shell', args: { command: 'id' } });
+  const record = log.finish(entry, { ok: true, command: 'id', stdout: 'uid=0(root)', stderr: '' });
+
+  assert.equal('argsBlob' in record, false);
+  assert.equal('commandBlob' in record, false);
+
+  const found = query.get(record.id);
+  assert.deepEqual(found.args, { command: 'id' });
+  assert.equal(found.command, 'id');
 });
 
 test('крупный вывод уезжает в блоб, но возвращается целиком', () => {

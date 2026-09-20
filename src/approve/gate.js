@@ -2,6 +2,7 @@ import { cfg } from '../config.js';
 import * as queue from './queue.js';
 import * as grants from './grants.js';
 import { policy } from './policy.js';
+import { redact } from '../secrets.js';
 
 // Разрешение на действие спрашивается у человека и только у него. Два пути: штатный
 // elicitation MCP и веб-очередь, если клиент спрашивать не умеет. Второй нужен не как
@@ -68,8 +69,26 @@ async function viaElicitation(ctx, { summary, details }) {
   }
 }
 
+/**
+ * Вопрос уходит человеку в клиент и ложится в таблицу approvals — обе дороги ведут
+ * наружу, и секрет, попавший в текст вопроса, ушёл бы по ним нечищеным. Однозначные
+ * находки в shell и files до сюда не доходят, их отклоняют раньше; здесь прикрыто
+ * всё остальное.
+ */
+function safe(value, depth = 0) {
+  if (typeof value === 'string') return redact(value);
+  if (depth > 4 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((v) => safe(v, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, safe(v, depth + 1)]));
+}
+
 /** Задаёт человеку один вопрос: сначала клиенту, при неудаче — в веб-очередь. */
-async function ask(ctx, { tool, alias, summary, details }) {
+async function ask(ctx, call) {
+  const tool = call.tool;
+  const alias = call.alias;
+  const summary = redact(call.summary);
+  const details = safe(call.details);
+
   const answered = await viaElicitation(ctx, { summary, details });
   if (answered) {
     const id = queue.create({ tool, alias, summary, details });

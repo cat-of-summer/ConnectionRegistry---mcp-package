@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DIRS, ensureDirs } from '../paths.js';
-import { readBlob } from './log.js';
+import { readBlob, readArgs } from './log.js';
 
 // Индекса нет — читаем файлы от новых к старым и останавливаемся, набрав limit.
 // Чтение идёт с конца кусками: держать в памяти 64-мегабайтный файл ради десяти
@@ -91,7 +91,13 @@ export function get(id) {
       let record;
       try { record = JSON.parse(line); } catch { continue; }
       if (record.id !== id) continue;
-      return { ...record, stdout: readBlob(record, 'stdout'), stderr: readBlob(record, 'stderr') };
+      return {
+        ...record,
+        args: readArgs(record),
+        command: readBlob(record, 'command'),
+        stdout: readBlob(record, 'stdout'),
+        stderr: readBlob(record, 'stderr'),
+      };
     }
   }
 

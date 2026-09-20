@@ -23,19 +23,29 @@ export const tools = [
     needsConnection: true,
     kinds: ['shell'],
     mutating: true,
+    // Ключ или токен открытым текстом в команде отклоняется; в stdin вместо значения
+    // принимается ссылка на секрет реестра — он подставляется на сервере.
+    scan: ['command', 'stdin'],
+    secretRefs: ['stdin'],
     title: pick({ ru: 'Выполнить команду', en: 'Run a command' }),
     description: pick({
       ru: 'Выполняет команду на сервере по алиасу подключения. Возвращает код возврата и оба потока '
         + 'целиком. Команда произвольная, поэтому каждый вызов проходит через подтверждение человека '
-        + 'и целиком попадает в журнал.',
+        + 'и целиком попадает в журнал. Секрет открытым текстом в команде отклоняется: положите его '
+        + 'через secret_set и передайте в stdin ссылкой cr://secret/<хост>#private_key.',
       en: 'Runs a command on the server behind the alias. Returns the exit code and both streams in full. '
-        + 'The command is arbitrary, so every call goes through human confirmation and is journalled in full.',
+        + 'The command is arbitrary, so every call goes through human confirmation and is journalled in full. '
+        + 'A plaintext secret in the command is refused: store it with secret_set and pass it in stdin '
+        + 'as cr://secret/<host>#private_key.',
     }),
     input: {
       alias: z.string(),
       command: z.string().describe(pick({ ru: 'команда как в шелле', en: 'command as typed in a shell' })),
       cwd: z.string().optional().describe(pick({ ru: 'каталог; по умолчанию из настроек алиаса', en: 'directory; defaults to the alias setting' })),
-      stdin: z.string().optional(),
+      stdin: z.string().optional().describe(pick({
+        ru: 'текст или ссылка cr://secret/<алиас>#private_key|password|passphrase — значение подставит сервер',
+        en: 'text, or cr://secret/<alias>#private_key|password|passphrase — the server fills in the value',
+      })),
       timeout: z.number().int().positive().optional().describe(pick({ ru: 'секунды', en: 'seconds' })),
     },
     summary: (args, resolved) => `Выполнить на «${args.alias}» (${resolved?.host?.address}): ${args.command}`,
@@ -68,6 +78,9 @@ export const tools = [
     needsConnection: true,
     kinds: ['shell'],
     mutating: true,
+    // Ссылок на секреты здесь нет: скрипт — код, а не значение. Ключ кладут ssh_exec'ом
+    // со ссылкой в stdin.
+    scan: ['script'],
     title: pick({ ru: 'Выполнить скрипт', en: 'Run a script' }),
     description: pick({
       ru: 'Отдаёт многострочный скрипт интерпретатору на сервере через stdin. Годится там, где '
