@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 
-export async function open({ host, port, database, username, password, ssl }) {
-  return mysql.createConnection({
+export async function open({ host, port, database, username, password, ssl, readOnly }) {
+  const connection = await mysql.createConnection({
     host,
     port,
     database,
@@ -12,6 +12,8 @@ export async function open({ host, port, database, username, password, ssl }) {
     multipleStatements: false,
     dateStrings: true,
   });
+  if (readOnly) await connection.query('SET SESSION TRANSACTION READ ONLY');
+  return connection;
 }
 
 export async function query(connection, sql, params = []) {

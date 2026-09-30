@@ -19,7 +19,7 @@ const { POLICIES } = await import('../src/approve/policy.js');
 // Тест держит верхнюю границу и заодно ловит схему, которая не сворачивается в
 // JSON Schema: без него опечатка в описании инструмента валит сервер при зелёных тестах.
 // Граница поднималась вместе с набором: четыре инструмента проектов добавили около 3 КБ,
-// db_credentials_import, env и output у shell, credentials у conn_set — ещё около 2 КБ.
+// secret_import, env и output у shell, credentials, via и readonly у conn_set — ещё около 2 КБ.
 const MANIFEST_BUDGET = 35_500;
 
 async function connect(spec) {

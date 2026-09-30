@@ -1,5 +1,6 @@
 import { cfg } from '../config.js';
 import * as audit from '../audit/log.js';
+import * as insights from '../audit/insights.js';
 import * as gate from '../approve/gate.js';
 import {
   resolve, secretValues, projectSecretValues, readSecretRef, isSecretRef, SECRET_REF_KINDS,
@@ -118,12 +119,13 @@ function fillSecretRefs(def, args, project) {
 function guardOf(def, args, resolved, { mutating, signs }) {
   const reasons = def.guard ? def.guard(args, resolved) : [];
   const host = resolved?.host;
-  if (host?.readonly && mutating) {
+  const flagged = host?.readonly || resolved?.config?.readonly;
+  if (flagged && mutating) {
     if (signs) reasons.push(...signs);
     else reasons.push(`изменяющий вызов ${def.name}`);
   }
   if (!reasons.length) return null;
-  return { host: host?.alias ?? args.alias ?? null, reasons };
+  return { host: host?.readonly ? host.alias : (args.alias ?? host?.alias ?? null), reasons };
 }
 
 export function wrap(def, sessionCtx) {
@@ -146,6 +148,13 @@ export function wrap(def, sessionCtx) {
     let resolved = null;
     let secrets = [];
 
+    // Для журнала разбора: форма вызова и трение вокруг него, без содержимого.
+    insights.session(ctx);
+    const started = Date.now();
+    // Команда — из аргументов, а не из результата: она нужна и у отклонённого вызова, чтобы
+    // по ней судить, зря ли спросили.
+    const note = { tool: def.name, group: def.group, project, args, command: args.command ?? args.sql ?? args.script ?? null };
+
     try {
       if (def.needsConnection) {
         resolved = resolve(alias);
@@ -156,6 +165,8 @@ export function wrap(def, sessionCtx) {
         }
         entry.kind = resolved.kind;
         entry.target = resolved.host ? resolved.host.alias : (resolved.config.address || null);
+        note.kind = resolved.kind;
+        note.host = resolved.host?.alias ?? null;
       }
 
       // До вопроса человеку: иначе он подтвердит то, что всё равно не выполнится, а
@@ -166,8 +177,12 @@ export function wrap(def, sessionCtx) {
       const signs = def.writeSigns ? def.writeSigns(args, resolved) : null;
       entry.mutating = mutating;
       entry.writeSigns = signs;
+      note.mutating = mutating;
+      note.writeSigns = signs;
+      note.guard = guardOf(def, args, resolved, { mutating, signs });
 
       const summary = def.summary ? def.summary(args, resolved) : `${def.name}${alias ? ` на ${alias}` : ''}`;
+      const asking = Date.now();
       entry.approval = await gate.authorize(ctx, {
         tool: def.name,
         group: def.group,
@@ -181,10 +196,12 @@ export function wrap(def, sessionCtx) {
         host: resolved?.host?.alias ?? alias,
         mutating,
         everyTime: def.everyTime,
-        guard: guardOf(def, args, resolved, { mutating, signs }),
+        guard: note.guard,
         summary,
         details: def.details ? def.details(args, resolved) : undefined,
       });
+      note.approval = entry.approval;
+      note.approvalMs = Date.now() - asking;
 
       // Список секретов собираем после подтверждения: до него расшифровка не нужна.
       // Берём и секреты всего проекта: пароль базы, попавший в эхо команды на шелле
@@ -215,11 +232,18 @@ export function wrap(def, sessionCtx) {
         secrets,
       });
 
+      insights.call(ctx, {
+        ...note, ok: result?.ok !== false, result, payload, secrets, durationMs: Date.now() - started,
+      });
+
       // Ответ агенту чистится теми же значениями, что и журнал: `cat .env` или
       // `echo $MYSQL_PWD` иначе вернули бы пароль, который реестр обещает не отдавать.
       return text(scrubDeep(payload, secrets));
     } catch (err) {
       audit.finish(entry, { ok: false, error: err.message, stdout: '', stderr: err.stack || '', secrets });
+      insights.call(ctx, {
+        ...note, ok: false, error: err, approval: note.approval ?? err.decision, secrets, durationMs: Date.now() - started,
+      });
 
       if (err instanceof LockedError) {
         return fail(`Реестр заперт: ${err.message}`);

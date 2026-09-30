@@ -78,6 +78,18 @@ export function resolveSource(source) {
   return file;
 }
 
+/** Удаляет загруженный файл и его каталог-метку, если тот опустел. Ничего вне uploads не трогает. */
+export function removeUpload(ref) {
+  const file = resolveSource(ref);
+  const rel = path.relative(DIRS.uploads, file);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`«${ref}» — не загрузка`);
+
+  fs.rmSync(file, { force: true });
+  const dir = path.dirname(file);
+  if (dir !== DIRS.uploads && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+  return true;
+}
+
 export function listUploads(limit = 50) {
   ensureDirs();
   return fs.readdirSync(DIRS.uploads)

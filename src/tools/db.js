@@ -112,8 +112,8 @@ export const tools = [
       schemaOnly: z.boolean().optional(),
       dataOnly: z.boolean().optional(),
     },
-    run: async (args, { resolved, approveHostKey }) => {
-      const name = `${resolved.config.database}${args.table ? `.${args.table}` : ''}.sql`;
+    run: async (args, { resolved, approveHostKey, addSecret, secrets }) => {
+      const name = `${resolved.config.database || 'dump'}${args.table ? `.${args.table}` : ''}.sql`;
       const artifact = newArtifact(name);
       const res = await dbTransport.dump(resolved, {
         table: args.table,
@@ -122,6 +122,7 @@ export const tools = [
         outFile: artifact.path,
         approveHostKey,
         addSecret,
+        secrets,
       });
 
       return {

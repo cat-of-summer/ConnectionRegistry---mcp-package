@@ -133,7 +133,7 @@ function guardStep(call) {
   return {
     scope: 'call',
     guard: true,
-    summary: `Хост «${host}» помечен «только для чтения», а вызов похож на изменяющий. Разрешить именно его? `
+    summary: `«${host}» помечен «только для чтения», а вызов похож на изменяющий. Разрешить именно его? `
       + call.summary,
     details: {
       ...(call.details || {}),
@@ -162,9 +162,18 @@ export async function authorize(ctx, call) {
 
   if (!steps.length) return { required: false };
 
+  // Сколько вопросов этот вызов задал человеку: у заданного сейчас есть id заявки. Число идёт
+  // в журнал — по нему видно, где стенд дёргает человека чаще, чем нужно.
   let last = null;
-  for (const step of steps) {
-    last = step.scope === 'call' ? await perCall(ctx, call, step) : await perSession(ctx, call, step);
+  let questions = 0;
+  try {
+    for (const step of steps) {
+      last = step.scope === 'call' ? await perCall(ctx, call, step) : await perSession(ctx, call, step);
+      if (last.id) questions++;
+    }
+  } catch (err) {
+    if (err.decision) err.decision.questions = questions + (err.decision.id ? 1 : 0);
+    throw err;
   }
-  return last;
+  return { ...last, questions };
 }

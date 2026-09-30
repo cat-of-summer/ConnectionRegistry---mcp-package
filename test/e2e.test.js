@@ -369,13 +369,14 @@ test('реквизиты базы читаются с хоста: .env, php-ко
 
   const early = await call(client, 'db_query', { alias, sql: 'select 1' });
   assert.equal(early.isError, true);
-  assert.match(early.text, /db_credentials_import/, 'до импорта — внятная подсказка');
+  assert.match(early.text, /secret_import/, 'до импорта — внятная подсказка');
 
   const before = asked.length;
-  const imported = await call(client, 'db_credentials_import', { alias });
+  const imported = await call(client, 'secret_import', { alias });
   assert.equal(imported.isError, false, imported.text);
   assert.equal(asked.length, before + 1, 'импорт спрашивается каждый раз');
   assert.deepEqual(imported.json.changed.sort(), ['database', 'password', 'username']);
+  assert.deepEqual(imported.json.config, { username: 'shop', database: 'shop', address: 'mysql_test' });
   assert.match(imported.json.password, /^••••\[password, \d+ Б, sha256:/);
   assert.equal(imported.text.includes(DB_PASSWORD), false, 'пароль вернулся агенту');
 
@@ -389,7 +390,7 @@ test('реквизиты базы читаются с хоста: .env, php-ко
   });
   assert.equal(toPhp.isError, false, toPhp.text);
   assert.equal(toPhp.json.hasSecret, false, 'пароль сброшен, чтобы импорт его прочитал заново');
-  const php = await call(client, 'db_credentials_import', { alias });
+  const php = await call(client, 'secret_import', { alias });
   assert.equal(php.isError, false, php.text);
   assert.deepEqual(php.json.changed, ['password']);
   assert.equal((await call(client, 'db_query', { alias, sql: 'select 12 as n' })).json.rows[0][0], 12);
@@ -412,6 +413,141 @@ test('реквизиты базы читаются с хоста: .env, php-ко
 
   const journal = await call(client, 'audit_query', { alias, limit: 50 });
   assert.equal(journal.text.includes(DB_PASSWORD), false, 'пароль в журнале');
+});
+
+/** Уборка своей сессией: клиент теста к моменту хуков after уже закрыт. */
+function janitor(t, work) {
+  t.after(async () => {
+    const client = new Client({ name: 'janitor', version: '0' }, { capabilities: { elicitation: {} } });
+    client.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { approve: true } }));
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`)));
+    await work(client);
+    await client.close();
+  });
+}
+
+test('via: exec — база за хостингом без проброса, клиентом на самом сервере', { skip: !enabled }, async (t) => {
+  const { client } = await connect(t, 'accept');
+  janitor(t, async (j) => {
+    await call(j, 'db_query', { alias: 'demo/exec-my', sql: 'drop table if exists e2e_exec' });
+    for (const alias of ['demo/exec-pg', 'demo/exec-my']) await call(j, 'conn_remove', { alias });
+  });
+
+  for (const [alias, engine, address] of [['demo/exec-pg', 'postgres', 'postgres_test'], ['demo/exec-my', 'mysql', 'mysql_test']]) {
+    const made = await call(client, 'conn_set', {
+      alias, kind: 'db', host: 'demo/srv', password: DB_PASSWORD,
+      config: { engine, address, database: 'shop', username: 'shop', via: 'exec' },
+    });
+    assert.equal(made.isError, false, made.text);
+  }
+
+  const pg = await call(client, 'db_query', { alias: 'demo/exec-pg', sql: 'select $1::text as t, $2::int as n, null as z', params: ["it's", 5] });
+  assert.equal(pg.isError, false, pg.text);
+  assert.match(pg.json.via, /psql на сервере/);
+  assert.deepEqual(pg.json.columns, ['t', 'n', 'z']);
+  assert.deepEqual(pg.json.rows, [["it's", 5, null]]);
+
+  const my = await call(client, 'db_query', { alias: 'demo/exec-my', sql: "select ? + 1 as n, null as z, 'NULL' as w", params: [41] });
+  assert.equal(my.isError, false, my.text);
+  assert.match(my.json.via, /mysql на сервере/);
+  assert.deepEqual(my.json.rows, [[42, null, 'NULL']]);
+
+  await call(client, 'db_query', { alias: 'demo/exec-my', sql: 'create table if not exists e2e_exec (id int)' });
+  const inserted = await call(client, 'db_query', { alias: 'demo/exec-my', sql: 'insert into e2e_exec values (?), (?)', params: [1, 2] });
+  assert.equal(inserted.isError, false, inserted.text);
+  assert.equal(inserted.json.rowCount, 2, 'сколько строк задел изменяющий запрос');
+
+  const tables = await call(client, 'db_tables', { alias: 'demo/exec-my' });
+  assert.ok(tables.json.tables.some((row) => row.name === 'e2e_exec'), tables.text);
+
+  const broken = await call(client, 'db_query', { alias: 'demo/exec-pg', sql: 'select from_nowhere' });
+  assert.equal(broken.isError, true);
+  assert.match(broken.text, /psql на сервере завершился/);
+  assert.equal(broken.text.includes(DB_PASSWORD), false);
+
+  for (const alias of ['demo/exec-pg', 'demo/exec-my']) {
+    const dump = await call(client, 'db_dump', { alias, schemaOnly: true });
+    assert.equal(dump.isError, false, dump.text);
+    assert.ok(dump.json.bytes > 100, `${alias}: дамп ${dump.json.bytes} Б`);
+    const body = await (await fetch(`${BASE}/artifacts/${dump.json.uri.slice('cr://artifacts/'.length)}`)).text();
+    assert.match(body, /CREATE TABLE/i);
+    assert.equal(body.includes(DB_PASSWORD), false);
+  }
+
+  const journal = await call(client, 'audit_query', { contains: 'exec-', limit: 50 });
+  assert.equal(journal.text.includes(DB_PASSWORD), false, 'пароль в журнале');
+});
+
+test('дамп через туннель ложится в артефакт', { skip: !enabled }, async (t) => {
+  const { client } = await connect(t, 'accept');
+  const dump = await call(client, 'db_dump', { alias: 'demo/db', schemaOnly: true });
+  assert.equal(dump.isError, false, dump.text);
+  assert.ok(dump.json.bytes > 100);
+});
+
+test('база в облаке: реквизиты из загруженного .env, только чтение у подключения', { skip: !enabled }, async (t) => {
+  const { client, asked } = await connect(t, 'accept');
+  const alias = 'demo/cloud-db';
+  janitor(t, async (j) => {
+    await call(j, 'db_query', { alias, sql: 'drop sequence if exists e2e_ro_seq' });
+    await call(j, 'conn_remove', { alias });
+  });
+
+  // Локальный .env проекта целиком — с чужими секретами рядом. Едет на /upload, мимо модели.
+  const env = [
+    'OTHER_TOKEN=ghp_не-наше-дело',
+    'CLOUD_DB_HOST=postgres_test',
+    'CLOUD_DB_PORT=5432',
+    'CLOUD_DB_NAME=shop',
+    'CLOUD_DB_USER=shop',
+    `CLOUD_DB_PASSWORD="${DB_PASSWORD}"`,
+  ].join('\n');
+  const form = new FormData();
+  form.append('file', new Blob([env]), '.env');
+  const uploaded = (await (await fetch(`${BASE}/upload`, { method: 'POST', body: form })).json()).uploaded[0];
+
+  const made = await call(client, 'conn_set', {
+    alias,
+    kind: 'db',
+    host: 'demo/srv',
+    config: {
+      engine: 'postgres',
+      readonly: true,
+      credentials: {
+        path: uploaded.uri,
+        format: 'env',
+        fields: { password: 'CLOUD_DB_PASSWORD', username: 'CLOUD_DB_USER', database: 'CLOUD_DB_NAME', address: 'CLOUD_DB_HOST', port: 'CLOUD_DB_PORT' },
+      },
+    },
+  });
+  assert.equal(made.isError, false, made.text);
+
+  const imported = await call(client, 'secret_import', { alias });
+  assert.equal(imported.isError, false, imported.text);
+  assert.deepEqual(imported.json.config, { address: 'postgres_test', port: 5432, database: 'shop', username: 'shop' });
+  assert.match(imported.json.uploadRemoved, /удалён/);
+  assert.equal((await fetch(`${BASE}/uploads/${uploaded.uri.slice('cr://uploads/'.length)}`)).status, 404, 'загрузка удалена');
+
+  const start = asked.length;
+  const read = await call(client, 'db_query', { alias, sql: 'select 1 as one' });
+  assert.equal(read.isError, false, read.text);
+  assert.equal(asked.length, start, 'чтение не спрашивает');
+
+  // Первая запись в свежей сессии спрашивает ещё про сессию и проект; readonly — последним.
+  const create = await call(client, 'db_query', { alias, sql: 'create sequence if not exists e2e_ro_seq' });
+  assert.equal(create.isError, false, create.text);
+  assert.match(asked.at(-1), /только для чтения/);
+
+  const before = asked.length;
+  const again = await call(client, 'db_query', { alias, sql: "comment on sequence e2e_ro_seq is 'e2e'" });
+  assert.equal(again.isError, false, again.text);
+  assert.equal(asked.length, before + 1, 'каждая следующая запись — ровно один вопрос');
+  assert.match(asked.at(-1), /только для чтения/);
+
+  // Разбор SQL считает это чтением, а nextval пишет: сессия только для чтения не пускает.
+  const sneaky = await call(client, 'db_query', { alias, sql: "select nextval('e2e_ro_seq')" });
+  assert.equal(sneaky.isError, true, sneaky.text);
+  assert.match(sneaky.text, /read-only transaction/);
 });
 
 test('хост «только для чтения»: чтение молча, запись — вопрос на каждый вызов', { skip: !enabled }, async (t) => {

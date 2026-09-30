@@ -11,6 +11,7 @@ import { listFacts, readFacts, setFact, removeFact } from '../src/registry/notes
 import { listProjects, upsertProject, removeDir, removeProject } from '../src/registry/projects.js';
 import * as auditQuery from '../src/audit/query.js';
 import { logSize } from '../src/audit/log.js';
+import * as insights from '../src/audit/insights.js';
 
 // Командная строка нужна там, где агента ещё нет: завести первый хост, положить
 // ключ, посмотреть журнал, разрешить заявку с сервера без браузера.
@@ -222,6 +223,14 @@ const COMMANDS = {
     return die(`cr log: неизвестное действие «${action}»`);
   },
 
+  // Журнал для разбора пишется только при CR_INSIGHTS=1; сводка читается и после выключения.
+  insights(args) {
+    const days = Number(args.days) || 30;
+    const report = insights.summary({ days });
+    if (!cfg.insights) report.note = 'CR_INSIGHTS выключен: новые события не пишутся, сводка — по накопленному';
+    return print(report);
+  },
+
   async approve(args) {
     const [action, id] = args._;
 
@@ -278,6 +287,8 @@ const HELP = `cr — реестр подключений
 
   cr log tail [--alias …] [--tool …] [--errors] [--limit 20]
   cr log show <id>
+  cr insights [--days 30]            сводка журнала для разбора (CR_INSIGHTS=1): ошибки, вопросы,
+                                     потолки, повторы и обходы — сырьё для доработок стенда
 
   cr approve ls
   cr approve yes <id>  |  cr approve no <id>

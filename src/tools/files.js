@@ -22,9 +22,9 @@ export const tools = [
         + 'from the connection root, an absolute one is used as is.',
     }),
     input: { alias: z.string(), path: z.string().optional() },
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const target = resolvePath(resolved, args.path ?? '.');
-      const entries = await withFiles(resolved, { approveHostKey }, (api) => api.list(target));
+      const entries = await withFiles(resolved, { approveHostKey, addSecret }, (api) => api.list(target));
       return { data: { path: target, entries } };
     },
   },
@@ -38,9 +38,9 @@ export const tools = [
     title: pick({ ru: 'Сведения о файле', en: 'File info' }),
     description: pick({ ru: 'Размер, права и время изменения одного файла.', en: 'Size, permissions and mtime of a single file.' }),
     input: { alias: z.string(), path: z.string() },
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const target = resolvePath(resolved, args.path);
-      const stat = await withFiles(resolved, { approveHostKey }, (api) => api.stat(target));
+      const stat = await withFiles(resolved, { approveHostKey, addSecret }, (api) => api.stat(target));
       return { data: stat };
     },
   },
@@ -63,10 +63,10 @@ export const tools = [
       path: z.string(),
       maxBytes: z.number().int().positive().optional(),
     },
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const target = resolvePath(resolved, args.path);
       const maxBytes = Math.min(args.maxBytes || cfg.maxTextBytes, cfg.maxTextBytes);
-      const res = await withFiles(resolved, { approveHostKey }, (api) => api.read(target, { maxBytes }));
+      const res = await withFiles(resolved, { approveHostKey, addSecret }, (api) => api.read(target, { maxBytes }));
 
       return {
         data: {
@@ -94,11 +94,11 @@ export const tools = [
         + 'binaries are retrieved without dragging them through the model context.',
     }),
     input: { alias: z.string(), path: z.string() },
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const target = resolvePath(resolved, args.path);
       const artifact = newArtifact(safeName(target.split('/').pop()));
 
-      await withFiles(resolved, { approveHostKey }, async (api) => {
+      await withFiles(resolved, { approveHostKey, addSecret }, async (api) => {
         const out = fs.createWriteStream(artifact.path);
         await api.downloadTo(target, out);
       });
@@ -136,7 +136,7 @@ export const tools = [
     summary: (args, resolved) => `Положить файл на «${args.alias}» (${resolved?.host?.address || resolved?.config?.address}): `
       + `${resolvePath(resolved, args.dest)}`,
     details: (args) => ({ источник: args.source || 'текст в параметре content' }),
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const dest = resolvePath(resolved, args.dest);
 
       if (!args.source && args.content === undefined) {
@@ -151,7 +151,7 @@ export const tools = [
         ? fs.statSync(resolveSource(args.source)).size
         : Buffer.byteLength(args.content);
 
-      await withFiles(resolved, { approveHostKey }, (api) => (args.source
+      await withFiles(resolved, { approveHostKey, addSecret }, (api) => (args.source
         ? api.writeStream(dest, payload)
         : api.write(dest, payload)));
 
@@ -169,10 +169,10 @@ export const tools = [
     description: pick({ ru: 'Переименовывает или переносит файл на сервере.', en: 'Renames or moves a file on the server.' }),
     input: { alias: z.string(), from: z.string(), to: z.string() },
     summary: (args, resolved) => `Переместить на «${args.alias}»: ${resolvePath(resolved, args.from)} → ${resolvePath(resolved, args.to)}`,
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const from = resolvePath(resolved, args.from);
       const to = resolvePath(resolved, args.to);
-      await withFiles(resolved, { approveHostKey }, (api) => api.move(from, to));
+      await withFiles(resolved, { approveHostKey, addSecret }, (api) => api.move(from, to));
       return { data: { from, to }, command: `mv ${from} ${to}` };
     },
   },
@@ -192,9 +192,9 @@ export const tools = [
     }),
     input: { alias: z.string(), path: z.string(), dir: z.boolean().optional() },
     summary: (args, resolved) => `Удалить на «${args.alias}»: ${resolvePath(resolved, args.path)}`,
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const target = resolvePath(resolved, args.path);
-      await withFiles(resolved, { approveHostKey }, (api) => (args.dir ? api.rmdir(target) : api.remove(target)));
+      await withFiles(resolved, { approveHostKey, addSecret }, (api) => (args.dir ? api.rmdir(target) : api.remove(target)));
       return { data: { removed: target }, command: `rm ${target}` };
     },
   },
@@ -214,9 +214,9 @@ export const tools = [
     }),
     input: { alias: z.string(), path: z.string() },
     summary: (args, resolved) => `Создать каталог на «${args.alias}»: ${resolvePath(resolved, args.path)}`,
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const target = resolvePath(resolved, args.path);
-      const created = await withFiles(resolved, { approveHostKey }, (api) => mkdirp(api, target));
+      const created = await withFiles(resolved, { approveHostKey, addSecret }, (api) => mkdirp(api, target));
       return { data: { path: target, created }, command: `mkdir -p ${target}` };
     },
   },
@@ -231,11 +231,11 @@ export const tools = [
     description: pick({ ru: 'Права восьмеричным числом, например 644 или 755.', en: 'Octal permissions, e.g. 644 or 755.' }),
     input: { alias: z.string(), path: z.string(), mode: z.string().describe('644') },
     summary: (args, resolved) => `Сменить права на «${args.alias}»: ${resolvePath(resolved, args.path)} → ${args.mode}`,
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const target = resolvePath(resolved, args.path);
       const mode = parseInt(args.mode, 8);
       if (Number.isNaN(mode)) throw new Error(`права «${args.mode}» не восьмеричное число`);
-      await withFiles(resolved, { approveHostKey }, (api) => api.chmod(target, mode));
+      await withFiles(resolved, { approveHostKey, addSecret }, (api) => api.chmod(target, mode));
       return { data: { path: target, mode: args.mode }, command: `chmod ${args.mode} ${target}` };
     },
   },

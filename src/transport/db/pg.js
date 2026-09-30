@@ -2,7 +2,7 @@ import pgLib from 'pg';
 
 const { Client } = pgLib;
 
-export async function open({ host, port, database, username, password, ssl }) {
+export async function open({ host, port, database, username, password, ssl, statementTimeoutMs, readOnly }) {
   const client = new Client({
     host,
     port,
@@ -12,6 +12,13 @@ export async function open({ host, port, database, username, password, ssl }) {
     ssl: ssl ? { rejectUnauthorized: false } : false,
     application_name: 'connection-registry',
     connectionTimeoutMillis: 15_000,
+    // Потолок на стороне сервера: в кластере со statement_timeout = 0 запрос, которого
+    // клиент перестал ждать, иначе доработает и закоммитится сам.
+    ...(statementTimeoutMs ? {
+      statement_timeout: statementTimeoutMs,
+      idle_in_transaction_session_timeout: statementTimeoutMs + 60_000,
+    } : {}),
+    ...(readOnly ? { options: '-c default_transaction_read_only=on' } : {}),
   });
   await client.connect();
   return client;

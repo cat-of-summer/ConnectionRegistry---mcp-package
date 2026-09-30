@@ -34,6 +34,11 @@ export const cfg = {
   logFileBytes: int('CR_LOG_FILE_BYTES', 64 * 1024 * 1024),
   logInlineBytes: int('CR_LOG_INLINE_BYTES', 256 * 1024),
 
+  // Журнал для разбора: форма вызовов, исходы и трение без содержимого — сырьё для доработок
+  // стенда. Выключен по умолчанию: нужен тому, кто стенд развивает.
+  insights: str('CR_INSIGHTS', '0') === '1',
+  insightsMaxBytes: int('CR_INSIGHTS_MAX_BYTES', 100 * 1024 * 1024),
+
   // Потолки ответов агенту
   maxTextBytes: int('CR_MAX_TEXT_BYTES', 128 * 1024),
   dbMaxRows: int('CR_DB_MAX_ROWS', 500),

@@ -8,6 +8,31 @@ import { projectOf } from './schema.js';
 // уровнем — инструменты, HTTP, журнал, — работает с результатом транспорта, а не
 // с кредами: чтобы утечь, секрету пришлось бы пройти отсюда наружу явной строкой.
 
+/** Хост в том виде, в каком его берёт транспорт: без секретов, с ленивым чтением кредов. */
+export function hostOf(hostRow) {
+  return {
+    alias: hostRow.alias,
+    address: hostRow.address,
+    port: hostRow.port,
+    username: hostRow.username,
+    authKind: hostRow.auth_kind,
+    hostKey: hostRow.host_key_fp,
+    hostKeyStatus: hostRow.host_key_status,
+    readonly: Boolean(hostRow.readonly),
+    // Ленивое чтение: метаданные подключения смотрят и без мастер-ключа,
+    // расшифровка происходит только когда дело дошло до соединения.
+    secret: () => readSecret(hostRow.secret_id),
+    passphrase: () => readSecret(hostRow.passphrase_id),
+  };
+}
+
+/** Хост по алиасу — для источника реквизитов, лежащего не на хосте самого подключения. */
+export function resolveHost(alias) {
+  const row = db().prepare('SELECT * FROM hosts WHERE alias = ?').get(alias);
+  if (!row) throw new Error(`хост «${alias}» не заведён`);
+  return hostOf(row);
+}
+
 export function resolve(alias) {
   const row = getConnectionRow(alias);
   if (!row) {
@@ -19,23 +44,7 @@ export function resolve(alias) {
 
   const hostRow = row.host_id ? db().prepare('SELECT * FROM hosts WHERE id = ?').get(row.host_id) : null;
   const config = JSON.parse(row.config || '{}');
-
-  const host = hostRow
-    ? {
-      alias: hostRow.alias,
-      address: hostRow.address,
-      port: hostRow.port,
-      username: hostRow.username,
-      authKind: hostRow.auth_kind,
-      hostKey: hostRow.host_key_fp,
-      hostKeyStatus: hostRow.host_key_status,
-      readonly: Boolean(hostRow.readonly),
-      // Ленивое чтение: метаданные подключения смотрят и без мастер-ключа,
-      // расшифровка происходит только когда дело дошло до соединения.
-      secret: () => readSecret(hostRow.secret_id),
-      passphrase: () => readSecret(hostRow.passphrase_id),
-    }
-    : null;
+  const host = hostRow ? hostOf(hostRow) : null;
 
   return {
     alias,

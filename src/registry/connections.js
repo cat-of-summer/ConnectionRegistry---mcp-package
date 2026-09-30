@@ -1,7 +1,7 @@
 import { db, now } from './db.js';
 import { replaceSecret, dropSecret, readSecret } from './crypto.js';
 import { getHostRow, publicHost } from './hosts.js';
-import { assertAlias, normalizeConfig, KINDS, DEFAULT_DB_PORT, DEFAULT_FILE_PORT } from './schema.js';
+import { assertAlias, normalizeConfig, KINDS, DEFAULT_DB_PORT, DEFAULT_FILE_PORT, CREDENTIAL_TARGETS } from './schema.js';
 import { requireProject } from './projects.js';
 
 export { projects } from './projects.js';
@@ -76,7 +76,7 @@ export function upsertConnection(input) {
     else secretId = replaceSecret(secretId, 'password', input.password);
   }
 
-  checkReachability(kind, config, hostRow, secretId);
+  checkReachability(kind, config, hostRow, secretId, project);
 
   const ts = now();
   const row = {
@@ -107,7 +107,34 @@ export function upsertConnection(input) {
 
 // Подключение без хоста ходит по сети напрямую — значит адрес обязан быть задано явно.
 // Поймать это при заведении дешевле, чем через месяц на боевом сервере.
-function checkReachability(kind, config, hostRow, secretId) {
+function checkReachability(kind, config, hostRow, secretId, project) {
+  const creds = config.credentials;
+  if (creds) {
+    const uploaded = creds.path.startsWith('cr://uploads/');
+    if (uploaded && creds.live) {
+      throw new Error('загруженный файл после импорта удаляется — live с ним невозможен, импортируйте заново');
+    }
+    if (uploaded && creds.format === 'php') {
+      throw new Error('php-конфиг исполняется на сервере — загруженный файл годится только для env и json');
+    }
+    if (!uploaded && !hostRow && !creds.from) {
+      throw new Error('реквизиты читаются с сервера по SSH — привяжите host, укажите credentials.from '
+        + 'или загрузите файл на /upload и дайте путь cr://uploads/…');
+    }
+    if (creds.from && creds.from.split('/')[0] !== project) {
+      throw new Error(`credentials.from «${creds.from}» — хост чужого проекта`);
+    }
+    if (kind === 'files' && config.proto === 'sftp') {
+      throw new Error('sftp входит с кредами хоста — источник реквизитов нужен только ftp/ftps');
+    }
+    if (kind === 'files' && !creds.fields?.password) {
+      throw new Error('для ftp укажите, в каком поле источника пароль: credentials.fields.password');
+    }
+    if (kind === 'files' && creds.fields?.database) {
+      throw new Error('у ftp нет имени базы — уберите credentials.fields.database');
+    }
+  }
+
   if (kind === 'shell' || kind === 'docker') {
     if (!hostRow) throw new Error(`подключению типа «${kind}» нужен хост: команды выполняются по SSH`);
     return;
@@ -118,7 +145,7 @@ function checkReachability(kind, config, hostRow, secretId) {
     if (config.proto !== 'sftp' && !config.address && !hostRow) {
       throw new Error('для ftp/ftps укажите address или привяжите хост');
     }
-    if (config.proto !== 'sftp' && config.username && !secretId) {
+    if (config.proto !== 'sftp' && config.username && !secretId && !creds) {
       throw new Error('для входа на ftp нужен пароль');
     }
     return;
@@ -128,21 +155,22 @@ function checkReachability(kind, config, hostRow, secretId) {
     if (!hostRow && (config.address === '127.0.0.1' || config.address === 'localhost')) {
       throw new Error('без хоста 127.0.0.1 указывает на сам контейнер реестра: привяжите host или задайте адрес базы');
     }
-    // Источник реквизитов даёт имя базы и пользователя сам — при импорте или на каждом соединении.
-    if (config.credentials) {
-      if (!hostRow) throw new Error('реквизиты читаются с хоста по SSH — привяжите host');
-      return;
+    if (config.via === 'exec' && !hostRow) {
+      throw new Error('via: exec выполняет клиент базы на сервере — привяжите host');
     }
+    // Источник реквизитов даёт имя базы и пользователя сам — при импорте или на каждом соединении.
+    if (creds) return;
     if (!config.database) throw new Error('у подключения к базе должно быть имя базы');
     if (!config.username) throw new Error('у подключения к базе должен быть пользователь');
   }
 }
 
 /**
- * Кладёт реквизиты, прочитанные с хоста: пароль — в секрет подключения, имя базы и
- * пользователя — в config. Пишет только то, что изменилось, и говорит, что именно.
+ * Кладёт реквизиты, прочитанные с сервера: пароль — в секрет подключения, остальное
+ * (username, database, address, port) — в config. Пишет только изменившееся и говорит,
+ * что именно. Возвращает и несекретную часть config — для ответа агенту.
  */
-export function applyCredentials(alias, creds) {
+export function applyCredentials(alias, values) {
   const row = getConnectionRow(alias);
   if (!row) throw new Error(`подключение «${alias}» не заведено`);
 
@@ -151,22 +179,26 @@ export function applyCredentials(alias, creds) {
   let secretId = row.secret_id;
 
   const stored = row.secret_id ? readSecret(row.secret_id) : null;
-  if (creds.password !== null && creds.password !== stored) {
-    secretId = replaceSecret(row.secret_id, 'password', creds.password);
+  if (values.password != null && values.password !== stored) {
+    secretId = replaceSecret(row.secret_id, 'password', values.password);
     changed.push('password');
   }
-  for (const field of ['username', 'database']) {
-    if (creds[field] !== null && creds[field] !== config[field]) {
-      config[field] = creds[field];
+  for (const field of CREDENTIAL_TARGETS) {
+    if (field === 'password' || values[field] == null) continue;
+    if (values[field] !== config[field]) {
+      config[field] = values[field];
       changed.push(field);
     }
   }
 
   if (changed.length) {
+    normalizeConfig(row.kind, config);
     db().prepare('UPDATE connections SET config = ?, secret_id = ?, updated_at = ? WHERE id = ?')
       .run(JSON.stringify(config), secretId, now(), row.id);
   }
-  return { changed, username: config.username ?? null, database: config.database ?? null };
+
+  const visible = Object.fromEntries(CREDENTIAL_TARGETS.filter((f) => f !== 'password' && config[f] != null).map((f) => [f, config[f]]));
+  return { changed, config: visible };
 }
 
 export function removeConnection(alias) {

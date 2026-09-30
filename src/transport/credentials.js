@@ -1,11 +1,19 @@
+import fs from 'node:fs';
 import { connect, exec, sftp, quote } from './ssh.js';
+import { resolveSource } from '../artifacts.js';
 import { make as makeSftp } from './sftp.js';
+import { resolveHost } from '../registry/resolve.js';
+import { applyCredentials } from '../registry/connections.js';
+import { projectOf } from '../registry/schema.js';
 
-// Реквизиты базы из конфига приложения на её же хосте. Читает их реестр, по своему SSH,
-// и дальше себя не отпускает: ни значения, ни куска файла нет ни в ответе, ни в ошибке —
-// сообщение парсера JSON, например, цитирует входной текст, поэтому оно подменяется своим.
+// Реквизиты подключения из конфига приложения на сервере: пароль базы в database.php, пароль
+// FTP в .env. Читает их реестр, по своему SSH, и дальше себя не отпускает: ни значения, ни
+// куска файла нет ни в ответе, ни в ошибке — сообщение парсера JSON, например, цитирует
+// входной текст, поэтому оно подменяется своим.
 
-const DEFAULT_FIELDS = {
+// Имена полей по умолчанию есть только у баз: там конфиги типовые (CodeIgniter, Laravel).
+// Для FTP соглашения нет — поле с паролем называют явно.
+const DB_DEFAULTS = {
   php: { password: 'password', username: 'username', database: 'database' },
   json: { password: 'password', username: 'username', database: 'database' },
   env: { password: 'DB_PASSWORD', username: 'DB_USERNAME', database: 'DB_DATABASE' },
@@ -90,22 +98,61 @@ async function readPhp(client, spec) {
 }
 
 /**
+ * Источник может лежать и на этой машине — .env проекта рядом с кодом, как у баз в облаке,
+ * куда SSH не ведёт вовсе. Такой файл загружают на /upload: он едет мимо контекста модели,
+ * а в config остаётся ссылка cr://uploads/….
+ */
+export const isUploaded = (value) => String(value || '').startsWith('cr://uploads/');
+
+function readUploaded(ref) {
+  const file = resolveSource(ref);
+  if (fs.statSync(file).size > MAX_FILE_BYTES) throw new Error(`файл реквизитов ${ref} больше ${MAX_FILE_BYTES} Б — это не конфиг`);
+  return fs.readFileSync(file, 'utf8');
+}
+
+/** Хост, где лежит файл: свой у подключения либо from — но только из того же проекта. */
+function sourceHost(resolved, spec) {
+  if (spec.from) {
+    if (projectOf(spec.from) !== resolved.project) {
+      throw new Error(`источник реквизитов «${spec.from}» — хост чужого проекта`);
+    }
+    return resolveHost(spec.from);
+  }
+  if (!resolved.host) throw new Error('реквизиты читаются с хоста по SSH: привяжите host или укажите credentials.from');
+  return resolved.host;
+}
+
+/** Какое поле источника в какое поле подключения. */
+export function fieldMap(resolved) {
+  const spec = resolved.config.credentials;
+  const defaults = resolved.kind === 'db' ? DB_DEFAULTS[spec.format] : {};
+  return { ...defaults, ...(spec.fields || {}) };
+}
+
+/**
  * Читает источник, описанный в config.credentials подключения.
- * Возвращает { password, username, database, found } — found перечисляет имена полей,
- * которые нашлись, для ответа агенту без значений.
+ * Возвращает { values, found }: values — { password, username, … } с null там, где поля
+ * не нашлось; found — «куда ← откуда» для ответа агенту, без значений.
  */
 export async function read(resolved, { approveHostKey } = {}) {
   const spec = resolved.config.credentials;
   if (!spec) throw new Error(`у «${resolved.alias}» не задан источник реквизитов: config.credentials`);
-  if (!resolved.host) throw new Error('реквизиты читаются с хоста по SSH, а у подключения хоста нет');
 
-  const client = await connect(resolved.host, { approveHostKey });
+  const names = fieldMap(resolved);
+  if (!names.password) {
+    throw new Error(`не сказано, в каком поле ${spec.path} лежит пароль: config.credentials.fields.password`);
+  }
+
   let data;
+  const uploaded = isUploaded(spec.path);
 
   if (spec.format === 'php') {
-    data = await readPhp(client, spec);
+    if (uploaded) throw new Error('php-конфиг исполняется на сервере — загруженный файл годится только для env и json');
+    data = await readPhp(await connect(sourceHost(resolved, spec), { approveHostKey }), spec);
   } else {
-    const text = await readText(client, spec.path);
+    const text = uploaded
+      ? readUploaded(spec.path)
+      : await readText(await connect(sourceHost(resolved, spec), { approveHostKey }), spec.path);
     if (spec.format === 'env') {
       data = parseEnv(text);
     } else {
@@ -119,17 +166,60 @@ export async function read(resolved, { approveHostKey } = {}) {
     throw new Error(`в ${spec.path} по ключу «${spec.key || '—'}» нет массива с реквизитами`);
   }
 
-  const names = { ...DEFAULT_FIELDS[spec.format], ...(spec.fields || {}) };
-  const take = (field) => {
-    const value = data[names[field]];
-    return value === undefined || value === null || value === '' ? null : String(value);
-  };
+  const values = {};
+  for (const [target, source] of Object.entries(names)) {
+    const value = data[source];
+    values[target] = value === undefined || value === null || value === '' ? null : String(value);
+  }
+  if (values.port !== undefined && values.port !== null) {
+    const port = Number(values.port);
+    values.port = Number.isInteger(port) && port > 0 ? port : null;
+  }
 
-  const creds = { password: take('password'), username: take('username'), database: take('database') };
-  if (creds.password === null) {
+  if (values.password === null) {
     const keys = Object.keys(data).slice(0, 20).join(', ');
     throw new Error(`в ${spec.path} нет поля «${names.password}» с паролем. Есть поля: ${keys || 'никаких'}`);
   }
 
-  return { ...creds, found: Object.keys(creds).filter((k) => creds[k] !== null).map((k) => `${k} ← ${names[k]}`) };
+  const found = Object.keys(values).filter((k) => values[k] !== null).map((k) => `${k} ← ${names[k]}`);
+  return { values, found };
+}
+
+/**
+ * Реквизиты на момент соединения. Обычно — из реестра. С live — с хоста: изменилось —
+ * реестр запоминает новое; не прочиталось — работаем сохранённым и говорим об этом в
+ * warning, а не роняем запрос к боевой базе.
+ */
+export async function current(resolved, { approveHostKey, addSecret } = {}) {
+  const spec = resolved.config.credentials;
+  const config = resolved.config;
+  const stored = {
+    password: resolved.hasSecret ? resolved.secret() : null,
+    username: config.username ?? null,
+    database: config.database ?? null,
+    address: config.address ?? null,
+    port: config.port ?? null,
+  };
+
+  if (!spec?.live) {
+    if (spec && !stored.password) {
+      throw new Error(`реквизиты «${resolved.alias}» ещё не прочитаны с хоста — вызовите secret_import`);
+    }
+    return { ...stored, warning: null };
+  }
+
+  try {
+    const fresh = await read(resolved, { approveHostKey });
+    addSecret?.(fresh.values.password);
+    const applied = applyCredentials(resolved.alias, fresh.values);
+    return {
+      ...stored,
+      ...applied.config,
+      password: fresh.values.password,
+      warning: applied.changed.length ? `реквизиты на хосте изменились (${applied.changed.join(', ')}), реестр обновлён` : null,
+    };
+  } catch (err) {
+    if (!stored.password) throw err;
+    return { ...stored, warning: `реквизиты с хоста не прочитались (${err.message}), взяты сохранённые` };
+  }
 }

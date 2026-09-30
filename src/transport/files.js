@@ -2,6 +2,7 @@ import path from 'node:path';
 import { connect, sftp } from './ssh.js';
 import { make as makeSftp } from './sftp.js';
 import { open as openFtp } from './ftp.js';
+import * as credentials from './credentials.js';
 
 // Путь в аргументах инструмента считается относительно root подключения, если он
 // задан и путь не абсолютный. Абсолютный путь уходит как есть: реестр не строит
@@ -37,7 +38,7 @@ export async function mkdirp(api, target) {
   return created;
 }
 
-export async function withFiles(resolved, { approveHostKey } = {}, fn) {
+export async function withFiles(resolved, { approveHostKey, addSecret } = {}, fn) {
   const proto = resolved.config.proto || 'sftp';
 
   if (proto === 'sftp') {
@@ -52,12 +53,16 @@ export async function withFiles(resolved, { approveHostKey } = {}, fn) {
     }
   }
 
-  const password = resolved.hasSecret ? resolved.secret() : resolved.host?.secret?.();
+  // Реквизиты из конфига приложения (credentials) — тем же путём, что у базы: импорт или live.
+  const creds = resolved.config.credentials
+    ? await credentials.current(resolved, { approveHostKey, addSecret })
+    : { password: resolved.hasSecret ? resolved.secret() : resolved.host?.secret?.() };
+
   const api = await openFtp({
-    address: resolved.config.address || resolved.host?.address,
-    port: resolved.port,
-    username: resolved.config.username || resolved.host?.username,
-    password,
+    address: creds.address || resolved.config.address || resolved.host?.address,
+    port: creds.port || resolved.port,
+    username: creds.username || resolved.config.username || resolved.host?.username,
+    password: creds.password,
     secure: proto === 'ftps',
   });
 

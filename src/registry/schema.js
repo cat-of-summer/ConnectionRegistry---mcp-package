@@ -27,6 +27,24 @@ export function assertHostAlias(alias) {
   return alias;
 }
 
+export const CREDENTIAL_FORMATS = ['php', 'env', 'json'];
+
+// Реквизиты в конфиге приложения на сервере: реестр читает их сам, по SSH, и значение не
+// проходит через агента. key — путь по точкам: у php «db.default» значит $db['default']
+// после include, пусто — то, что include вернул (конфиг Laravel). fields — какое поле
+// источника куда ложится: password — в секрет подключения, остальное — в его config.
+// from — хост, где лежит файл, если не на хосте самого подключения (ftp без хоста).
+export const CREDENTIAL_TARGETS = ['password', 'username', 'database', 'address', 'port'];
+
+export const credentialsSchema = z.object({
+  path: z.string(),
+  format: z.enum(CREDENTIAL_FORMATS),
+  key: z.string().optional(),
+  from: z.string().optional(),
+  fields: z.object(Object.fromEntries(CREDENTIAL_TARGETS.map((k) => [k, z.string().optional()]))).strict().optional(),
+  live: z.boolean().optional(),
+}).strict();
+
 const shell = z.object({
   cwd: z.string().optional(),
   shell: z.string().optional(),
@@ -40,6 +58,8 @@ const files = z.object({
   port: z.number().int().positive().optional(),
   username: z.string().optional(),
   secure: z.boolean().optional(),
+  credentials: credentialsSchema.optional(),
+  readonly: z.boolean().optional(),
 }).strict();
 
 const docker = z.object({
@@ -47,23 +67,6 @@ const docker = z.object({
   composeFile: z.string().optional(),
   workdir: z.string().optional(),
   sudo: z.boolean().optional(),
-}).strict();
-
-export const CREDENTIAL_FORMATS = ['php', 'env', 'json'];
-
-// Реквизиты базы в конфиге приложения на том же хосте: реестр читает их сам, по SSH, и
-// значение не проходит через агента. key — путь по точкам: у php «db.default» значит
-// $db['default'] после include, пусто — то, что include вернул (конфиг Laravel).
-export const credentialsSchema = z.object({
-  path: z.string(),
-  format: z.enum(CREDENTIAL_FORMATS),
-  key: z.string().optional(),
-  fields: z.object({
-    password: z.string().optional(),
-    username: z.string().optional(),
-    database: z.string().optional(),
-  }).strict().optional(),
-  live: z.boolean().optional(),
 }).strict();
 
 const database = z.object({
@@ -76,6 +79,12 @@ const database = z.object({
   username: z.string().optional(),
   ssl: z.boolean().optional(),
   credentials: credentialsSchema.optional(),
+  // tunnel — драйвер реестра через SSH-проброс; exec — консольный клиент на самом сервере,
+  // для хостингов, где проброс закрыт.
+  via: z.enum(['tunnel', 'exec']).optional(),
+  // Только чтение у самого подключения — для базы без хоста (облако), где флагу хоста
+  // негде жить. С хостом работает и флаг хоста; достаточно любого из двух.
+  readonly: z.boolean().optional(),
 }).strict();
 
 const BY_KIND = { shell, files, docker, db: database };

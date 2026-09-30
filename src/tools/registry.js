@@ -8,6 +8,7 @@ import { listProjects, upsertProject, removeDir, removeProject, COMMENT_MAX } fr
 import { KINDS, AUTH_KINDS, DB_ENGINES, FILE_PROTOCOLS, credentialsSchema } from '../registry/schema.js';
 import { maskWhole } from '../secrets.js';
 import * as credentials from '../transport/credentials.js';
+import { removeUpload } from '../artifacts.js';
 import { putSecret, replaceSecret } from '../registry/crypto.js';
 import { db } from '../registry/db.js';
 import { resolve, isSecretRef } from '../registry/resolve.js';
@@ -247,15 +248,19 @@ export const tools = [
         database: z.string().optional(),
         ssl: z.boolean().optional(),
         credentials: credentialsSchema.optional(),
+        via: z.enum(['tunnel', 'exec']).optional(),
+        readonly: z.boolean().optional(),
       }).optional().describe(pick({
         ru: 'настройки по типу: shell — cwd; files — proto, root; docker — container, composeFile; '
-          + 'db — engine, database, username либо credentials (реквизиты из конфига на хосте, help db)',
+          + 'db — engine, database, username либо credentials (реквизиты из конфига, help db), via, readonly',
         en: 'kind-specific settings: shell — cwd; files — proto, root; docker — container, composeFile; '
-          + 'db — engine, database, username, or credentials (from the app config on the host, help db)',
+          + 'db — engine, database, username, or credentials (from an app config, help db), via, readonly',
       })),
       password: z.string().optional().describe(pick({ ru: 'пароль базы или ftp', en: 'database or ftp password' })),
       note: z.string().optional(),
     },
+    guard: (args) => (args.config?.readonly === false && getConnection(args.alias)?.config?.readonly
+      ? ['снятие флага «только для чтения»'] : []),
     summary: (args) => `Завести или изменить подключение «${args.alias}» в реестре`,
     details: (args) => ({ тип: args.kind, хост: args.host, настройки: args.config }),
     run: (args) => ({ data: upsertConnection(args) }),
@@ -329,40 +334,51 @@ export const tools = [
   },
 
   {
-    name: 'db_credentials_import',
+    name: 'secret_import',
     group: GROUP,
     everyTime: true,
     mutating: true,
     needsConnection: true,
-    kinds: ['db'],
-    title: pick({ ru: 'Реквизиты базы с хоста', en: 'Import DB credentials from the host' }),
+    kinds: ['db', 'files'],
+    title: pick({ ru: 'Реквизиты из конфига', en: 'Import credentials from a config' }),
     description: pick({
-      ru: 'Читает реквизиты базы из конфига на хосте (config.credentials) и сохраняет в реестре; значение '
-        + 'не возвращается. Сменился пароль — вызвать снова, либо live: true.',
-      en: 'Reads DB credentials from the app config on the host (config.credentials) into the registry; the '
-        + 'value is never returned. Password changed — call again, or set live: true.',
+      ru: 'Читает реквизиты подключения из конфига приложения (config.credentials: файл на сервере или '
+        + 'cr://uploads/…) и кладёт в реестр: пароль — в секрет, остальное — в config. Значение не '
+        + 'возвращается. Сменился пароль — вызвать снова либо live: true.',
+      en: 'Reads connection credentials from an app config (config.credentials: a file on the server or '
+        + 'cr://uploads/…) into the registry: the password as a secret, the rest into config. The value is '
+        + 'never returned. Password changed — call again, or set live: true.',
     }),
     input: { alias: z.string() },
-    summary: (args, resolved) => `Прочитать реквизиты базы «${args.alias}» из `
-      + `${resolved?.config?.credentials?.path} на «${resolved?.host?.alias}» и сохранить в реестре`,
+    summary: (args, resolved) => {
+      const spec = resolved?.config?.credentials;
+      const where = credentials.isUploaded(spec?.path) ? 'загруженного файла' : `«${spec?.from || resolved?.host?.alias}»`;
+      return `Прочитать реквизиты «${args.alias}» из ${spec?.path} с ${where} и сохранить в реестре`;
+    },
     details: (args, resolved) => ({ источник: resolved?.config?.credentials }),
     run: async (args, { resolved, approveHostKey, addSecret }) => {
+      const spec = resolved.config.credentials;
       const creds = await credentials.read(resolved, { approveHostKey });
-      addSecret(creds.password);
-      const applied = applyCredentials(args.alias, creds);
+      addSecret(creds.values.password);
+      const applied = applyCredentials(args.alias, creds.values);
+
+      // Загруженный файл — копия чужого .env целиком, со всеми его секретами. Своё дело он
+      // сделал: держать его открытым текстом в томе загрузок незачем.
+      let removed;
+      if (credentials.isUploaded(spec.path)) removed = removeUpload(spec.path);
+
       return {
         data: {
           alias: args.alias,
           found: creds.found,
           changed: applied.changed,
-          username: applied.username,
-          database: applied.database,
-          password: maskWhole(creds.password, 'password'),
+          config: applied.config,
+          password: maskWhole(creds.values.password, 'password'),
+          ...(removed ? { uploadRemoved: `${spec.path} удалён; для повторного импорта загрузите файл заново` } : {}),
         },
       };
     },
   },
-
   {
     name: 'conn_check',
     group: GROUP,
