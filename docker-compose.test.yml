@@ -22,7 +22,7 @@ services:
       - SUDO_ACCESS=false
     volumes:
       - ./test-fixtures/sshd/10-enable-forwarding.sh:/custom-cont-init.d/10-enable-forwarding.sh:ro
-      - ./test-fixtures/sshd/20-php-cli.sh:/custom-cont-init.d/20-php-cli.sh:ro
+      - ./test-fixtures/sshd/20-hosting-tools.sh:/custom-cont-init.d/20-hosting-tools.sh:ro
     networks:
       - network
       - behind
