@@ -29,6 +29,7 @@ export function resolve(alias) {
       authKind: hostRow.auth_kind,
       hostKey: hostRow.host_key_fp,
       hostKeyStatus: hostRow.host_key_status,
+      readonly: Boolean(hostRow.readonly),
       // Ленивое чтение: метаданные подключения смотрят и без мастер-ключа,
       // расшифровка происходит только когда дело дошло до соединения.
       secret: () => readSecret(hostRow.secret_id),

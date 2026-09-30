@@ -134,6 +134,13 @@ const MIGRATIONS = [
     // бы собственному правилу. Их заводят руками через project_set — хосты, подключения и
     // факты дождутся этого и до тех пор отказывают «проект не заведён».
   },
+
+  // 5 — хост «только для чтения»: похожие на запись вызовы через любое его подключение
+  // спрашивают человека каждый раз, мимо выданных на сессию разрешений.
+  (db) => {
+    const columns = db.prepare('PRAGMA table_info(hosts)').all().map((c) => c.name);
+    if (!columns.includes('readonly')) db.exec('ALTER TABLE hosts ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0');
+  },
 ];
 
 /**

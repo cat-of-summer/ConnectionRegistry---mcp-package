@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { cfg } from '../config.js';
 import { DIRS, ensureDirs } from '../paths.js';
-import { redact, maskWhole } from '../secrets.js';
+import { redact, maskWhole, scrub } from '../secrets.js';
 
 // Журнал живёт файлами, без второй копии в базе: он растёт до гигабайта, а нужен
 // целиком и подряд. Одна строка JSONL — одно действие; крупный вывод уезжает в
@@ -17,7 +17,6 @@ import { redact, maskWhole } from '../secrets.js';
 // конкретные значения из реестра и вычищает их из вывода, если пароль ушёл в эхо.
 
 const SECRET_KEYS = /^(password|passphrase|privatekey|private_key|secret|token|dsn|key)$/i;
-const MASK = '••••';
 
 /**
  * whole — имена полей, которые этот инструмент объявил секретными целиком.
@@ -50,16 +49,9 @@ function hintOf(key) {
   return 'password';
 }
 
-/** Вычищает конкретные значения секретов из текста: пароль мог уйти в эхо команды. */
-export function scrub(text, secrets = []) {
-  if (!text) return text;
-  let out = String(text);
-  for (const secret of secrets) {
-    if (!secret || secret.length < 4) continue;
-    out = out.split(secret).join(MASK);
-  }
-  return out;
-}
+// Чистка по известным значениям живёт рядом с остальным распознаванием секретов: ею же
+// чистится ответ агенту и артефакт с выводом команды.
+export { scrub };
 
 export function newId(date = new Date()) {
   const stamp = date.toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -155,6 +147,10 @@ export function finish(entry, outcome = {}) {
     target: entry.target,
     args: entry.args,
     approval: entry.approval,
+    // Из этих двух полей складывается ответ на «что на хосте менялось»: ssh_exec изменяющий
+    // по объявлению, и без примет записи в него попало бы каждое ls.
+    mutating: entry.mutating ?? null,
+    writeSigns: entry.writeSigns ?? null,
     ok: outcome.ok !== false,
     exitCode: outcome.exitCode ?? null,
     durationMs: Date.now() - entry.startedAt,

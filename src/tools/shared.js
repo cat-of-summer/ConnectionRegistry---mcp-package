@@ -6,7 +6,7 @@ import {
 } from '../registry/resolve.js';
 import { pinHostKey } from '../registry/hosts.js';
 import { LockedError } from '../registry/crypto.js';
-import { scanArgs, describe } from '../secrets.js';
+import { scanArgs, describe, scrub, scrubDeep } from '../secrets.js';
 
 // Общая рамка вокруг каждого инструмента: разобрать алиас, спросить человека,
 // выполнить, записать в журнал. Инструменты сами этим не занимаются — иначе
@@ -77,7 +77,8 @@ function refuseSecrets(def, args, resolved) {
 /**
  * Подставляет значения вместо ссылок cr://secret/…, уже после подтверждения. Поле
  * подставляется целиком: подстановка внутри текста вернула бы секрет в произвольную
- * строку, ради ухода от которой всё и затевалось.
+ * строку, ради ухода от которой всё и затевалось. Поле-объект (env) подставляется
+ * по значениям — каждое тоже целиком.
  */
 function fillSecretRefs(def, args, project) {
   if (!def.secretRefs) return { args, values: [] };
@@ -86,13 +87,43 @@ function fillSecretRefs(def, args, project) {
   const values = [];
 
   for (const field of def.secretRefs) {
-    if (!isSecretRef(out[field])) continue;
-    const value = readSecretRef(out[field], { project });
-    out = { ...out, [field]: value };
-    values.push(value);
+    const current = out[field];
+
+    if (isSecretRef(current)) {
+      const value = readSecretRef(current, { project });
+      out = { ...out, [field]: value };
+      values.push(value);
+      continue;
+    }
+
+    if (current && typeof current === 'object' && !Array.isArray(current)) {
+      const filled = {};
+      for (const [key, inner] of Object.entries(current)) {
+        if (!isSecretRef(inner)) { filled[key] = inner; continue; }
+        filled[key] = readSecretRef(inner, { project });
+        values.push(filled[key]);
+      }
+      out = { ...out, [field]: filled };
+    }
   }
 
   return { args: out, values };
+}
+
+/**
+ * Почему этот вызов надо подтвердить отдельно, мимо выданных на сессию разрешений.
+ * Хост «только для чтения»: shell-команда с приметами записи или любой изменяющий вызов
+ * других типов. Плюс то, что инструмент объявил сам, — снятие самого флага.
+ */
+function guardOf(def, args, resolved, { mutating, signs }) {
+  const reasons = def.guard ? def.guard(args, resolved) : [];
+  const host = resolved?.host;
+  if (host?.readonly && mutating) {
+    if (signs) reasons.push(...signs);
+    else reasons.push(`изменяющий вызов ${def.name}`);
+  }
+  if (!reasons.length) return null;
+  return { host: host?.alias ?? args.alias ?? null, reasons };
 }
 
 export function wrap(def, sessionCtx) {
@@ -131,6 +162,11 @@ export function wrap(def, sessionCtx) {
       // ssh_script успеет показать ему ключ в диалоге — details там сам скрипт.
       refuseSecrets(def, args, resolved);
 
+      const mutating = isMutating(def, args);
+      const signs = def.writeSigns ? def.writeSigns(args, resolved) : null;
+      entry.mutating = mutating;
+      entry.writeSigns = signs;
+
       const summary = def.summary ? def.summary(args, resolved) : `${def.name}${alias ? ` на ${alias}` : ''}`;
       entry.approval = await gate.authorize(ctx, {
         tool: def.name,
@@ -143,8 +179,9 @@ export function wrap(def, sessionCtx) {
         // Право писать выдаётся на сервер: одно разрешение на shell, файлы, docker и базу
         // одного хоста. Подключение без хоста ходит по сети само — тогда оно и есть ключ.
         host: resolved?.host?.alias ?? alias,
-        mutating: isMutating(def, args),
+        mutating,
         everyTime: def.everyTime,
+        guard: guardOf(def, args, resolved, { mutating, signs }),
         summary,
         details: def.details ? def.details(args, resolved) : undefined,
       });
@@ -162,6 +199,10 @@ export function wrap(def, sessionCtx) {
         ctx,
         resolved,
         approveHostKey: makeHostKeyApprover(resolved),
+        secrets,
+        // Секрет, узнанный по ходу вызова (пароль базы, прочитанный с хоста), чистится
+        // из ответа и журнала наравне с заведёнными заранее.
+        addSecret: (value) => { if (value) secrets.push(String(value)); },
       });
 
       const payload = result?.data ?? result ?? null;
@@ -174,7 +215,9 @@ export function wrap(def, sessionCtx) {
         secrets,
       });
 
-      return text(payload);
+      // Ответ агенту чистится теми же значениями, что и журнал: `cat .env` или
+      // `echo $MYSQL_PWD` иначе вернули бы пароль, который реестр обещает не отдавать.
+      return text(scrubDeep(payload, secrets));
     } catch (err) {
       audit.finish(entry, { ok: false, error: err.message, stdout: '', stderr: err.stack || '', secrets });
 
@@ -189,7 +232,7 @@ export function wrap(def, sessionCtx) {
       }
       // Отказ по секрету сам объясняет, что делать: прятать его за именем инструмента незачем.
       if (err.code === 'secret_in_args') return fail(err.message);
-      return fail(`${def.name}: ${err.message}`);
+      return fail(`${def.name}: ${scrub(err.message, secrets)}`);
     }
   };
 }

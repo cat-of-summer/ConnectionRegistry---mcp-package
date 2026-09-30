@@ -112,5 +112,12 @@ test('факты остались с нулевым возрастом, своб
   assert.deepEqual(fact, { value: '/opt/php84/bin/php', read_seq: 0 });
   const tables = db().prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
   assert.equal(tables.includes('notes_text'), false);
-  assert.equal(db().pragma('user_version', { simple: true }), 4);
+  assert.equal(db().pragma('user_version', { simple: true }), 5);
+});
+
+test('прежние хосты не стали «только для чтения» сами собой', () => {
+  const columns = db().prepare('PRAGMA table_info(hosts)').all().map((c) => c.name);
+  assert.ok(columns.includes('readonly'));
+  const flagged = db().prepare('SELECT count(*) AS n FROM hosts WHERE readonly != 0').get().n;
+  assert.equal(flagged, 0);
 });

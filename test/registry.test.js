@@ -233,3 +233,20 @@ test('подключение убирается вместе со своим с�
   const after = db().prepare('SELECT count(*) AS n FROM secrets').get().n;
   assert.equal(after, before - 1);
 });
+
+test('пустой пароль и пустая фраза снимают секрет, а не падают на внешнем ключе', () => {
+  hosts.upsertHost({ alias: 'demo/fk', address: '10.0.0.7', user: 'deploy', password: 'пароль-хоста', passphrase: 'фраза' });
+  connections.upsertConnection({
+    alias: 'demo/fk-db', kind: 'db', host: 'demo/fk', password: 'пароль-базы',
+    config: { engine: 'mysql', database: 'shop', username: 'shop' },
+  });
+
+  const before = db().prepare('SELECT count(*) AS n FROM secrets').get().n;
+  assert.equal(connections.upsertConnection({ alias: 'demo/fk-db', password: '' }).hasSecret, false);
+  hosts.upsertHost({ alias: 'demo/fk', passphrase: '' });
+  assert.equal(db().prepare('SELECT passphrase_id FROM hosts WHERE alias = ?').get('demo/fk').passphrase_id, null);
+  assert.equal(db().prepare('SELECT count(*) AS n FROM secrets').get().n, before - 2, 'снятые секреты не остались сиротами');
+
+  connections.removeConnection('demo/fk-db');
+  hosts.removeHost('demo/fk');
+});

@@ -1,5 +1,5 @@
 import { db, now } from './db.js';
-import { replaceSecret, dropSecret } from './crypto.js';
+import { replaceSecret, dropSecret, readSecret } from './crypto.js';
 import { getHostRow, publicHost } from './hosts.js';
 import { assertAlias, normalizeConfig, KINDS, DEFAULT_DB_PORT, DEFAULT_FILE_PORT } from './schema.js';
 import { requireProject } from './projects.js';
@@ -67,11 +67,13 @@ export function upsertConnection(input) {
     hostRow = db().prepare('SELECT * FROM hosts WHERE id = ?').get(existing.host_id);
   }
 
+  // Пустой пароль снимает секрет. Удаляется он после записи строки: пока подключение на
+  // него ссылается, внешний ключ удалить не даст.
   let secretId = existing?.secret_id ?? null;
+  let orphan = null;
   if (input.password !== undefined) {
-    secretId = input.password === ''
-      ? (dropSecret(secretId), null)
-      : replaceSecret(secretId, 'password', input.password);
+    if (input.password === '') [orphan, secretId] = [secretId, null];
+    else secretId = replaceSecret(secretId, 'password', input.password);
   }
 
   checkReachability(kind, config, hostRow, secretId);
@@ -98,6 +100,7 @@ export function upsertConnection(input) {
       VALUES (@alias, @project, @kind, @host_id, @config, @secret_id, @note, @created_at, @updated_at)`)
       .run({ ...row, created_at: ts });
   }
+  dropSecret(orphan);
 
   return getConnection(alias);
 }
@@ -125,9 +128,45 @@ function checkReachability(kind, config, hostRow, secretId) {
     if (!hostRow && (config.address === '127.0.0.1' || config.address === 'localhost')) {
       throw new Error('без хоста 127.0.0.1 указывает на сам контейнер реестра: привяжите host или задайте адрес базы');
     }
+    // Источник реквизитов даёт имя базы и пользователя сам — при импорте или на каждом соединении.
+    if (config.credentials) {
+      if (!hostRow) throw new Error('реквизиты читаются с хоста по SSH — привяжите host');
+      return;
+    }
     if (!config.database) throw new Error('у подключения к базе должно быть имя базы');
     if (!config.username) throw new Error('у подключения к базе должен быть пользователь');
   }
+}
+
+/**
+ * Кладёт реквизиты, прочитанные с хоста: пароль — в секрет подключения, имя базы и
+ * пользователя — в config. Пишет только то, что изменилось, и говорит, что именно.
+ */
+export function applyCredentials(alias, creds) {
+  const row = getConnectionRow(alias);
+  if (!row) throw new Error(`подключение «${alias}» не заведено`);
+
+  const config = JSON.parse(row.config || '{}');
+  const changed = [];
+  let secretId = row.secret_id;
+
+  const stored = row.secret_id ? readSecret(row.secret_id) : null;
+  if (creds.password !== null && creds.password !== stored) {
+    secretId = replaceSecret(row.secret_id, 'password', creds.password);
+    changed.push('password');
+  }
+  for (const field of ['username', 'database']) {
+    if (creds[field] !== null && creds[field] !== config[field]) {
+      config[field] = creds[field];
+      changed.push(field);
+    }
+  }
+
+  if (changed.length) {
+    db().prepare('UPDATE connections SET config = ?, secret_id = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(config), secretId, now(), row.id);
+  }
+  return { changed, username: config.username ?? null, database: config.database ?? null };
 }
 
 export function removeConnection(alias) {

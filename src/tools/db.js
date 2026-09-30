@@ -22,7 +22,7 @@ export const tools = [
         + 'port needs no public exposure.',
     }),
     input: { alias: z.string() },
-    run: async (args, { resolved, approveHostKey }) => ({ data: await dbTransport.tables(resolved, { approveHostKey }) }),
+    run: async (args, { resolved, approveHostKey, addSecret }) => ({ data: await dbTransport.tables(resolved, { approveHostKey, addSecret }) }),
   },
 
   {
@@ -34,8 +34,8 @@ export const tools = [
     title: pick({ ru: 'Схема таблицы', en: 'Table schema' }),
     description: pick({ ru: 'Столбцы таблицы: тип, обязательность, значение по умолчанию.', en: 'Table columns: type, nullability, default.' }),
     input: { alias: z.string(), table: z.string(), schema: z.string().optional() },
-    run: async (args, { resolved, approveHostKey }) => ({
-      data: await dbTransport.columns(resolved, args.table, { schema: args.schema || '', approveHostKey }),
+    run: async (args, { resolved, approveHostKey, addSecret }) => ({
+      data: await dbTransport.columns(resolved, args.table, { schema: args.schema || '', approveHostKey, addSecret }),
     }),
   },
 
@@ -68,7 +68,7 @@ export const tools = [
       сервер: resolved?.host ? `${resolved.host.alias} (${resolved.host.address})` : resolved?.config?.address,
       параметры: args.params,
     }),
-    run: async (args, { resolved, approveHostKey }) => {
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
       const shape = classify(args.sql);
       if (shape.count > 1) {
         throw new Error(
@@ -81,11 +81,12 @@ export const tools = [
         params: args.params || [],
         maxRows: Math.min(args.maxRows || cfg.dbMaxRows, cfg.dbMaxRows),
         approveHostKey,
+        addSecret,
       });
 
       const first = res.results[0] || { columns: [], rows: [], rowCount: 0 };
       return {
-        data: { via: res.via, readonly: shape.readonly, ...first },
+        data: { via: res.via, readonly: shape.readonly, ...first, warning: res.warning },
         command: args.sql,
         stdout: JSON.stringify(first.rows),
       };
@@ -120,6 +121,7 @@ export const tools = [
         dataOnly: args.dataOnly,
         outFile: artifact.path,
         approveHostKey,
+        addSecret,
       });
 
       return {

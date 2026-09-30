@@ -49,14 +49,33 @@ const docker = z.object({
   sudo: z.boolean().optional(),
 }).strict();
 
+export const CREDENTIAL_FORMATS = ['php', 'env', 'json'];
+
+// Реквизиты базы в конфиге приложения на том же хосте: реестр читает их сам, по SSH, и
+// значение не проходит через агента. key — путь по точкам: у php «db.default» значит
+// $db['default'] после include, пусто — то, что include вернул (конфиг Laravel).
+export const credentialsSchema = z.object({
+  path: z.string(),
+  format: z.enum(CREDENTIAL_FORMATS),
+  key: z.string().optional(),
+  fields: z.object({
+    password: z.string().optional(),
+    username: z.string().optional(),
+    database: z.string().optional(),
+  }).strict().optional(),
+  live: z.boolean().optional(),
+}).strict();
+
 const database = z.object({
   engine: z.enum(DB_ENGINES),
   // Адрес со стороны хоста: при туннеле это 127.0.0.1 самого сервера
   address: z.string().default('127.0.0.1'),
   port: z.number().int().positive().optional(),
-  database: z.string(),
-  username: z.string(),
+  // Без источника реквизитов оба обязательны — это проверяет connections.js
+  database: z.string().optional(),
+  username: z.string().optional(),
   ssl: z.boolean().optional(),
+  credentials: credentialsSchema.optional(),
 }).strict();
 
 const BY_KIND = { shell, files, docker, db: database };

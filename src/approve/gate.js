@@ -128,12 +128,38 @@ async function perSession(ctx, call, step) {
   return { ...base, ...decision };
 }
 
+function guardStep(call) {
+  const { host, reasons } = call.guard;
+  return {
+    scope: 'call',
+    guard: true,
+    summary: `Хост «${host}» помечен «только для чтения», а вызов похож на изменяющий. Разрешить именно его? `
+      + call.summary,
+    details: {
+      ...(call.details || {}),
+      'почему спрашиваю': reasons.join('; '),
+      'что это значит': 'Разрешение только на этот вызов: следующий похожий спросит снова. '
+        + 'Флаг снимается host_set с readonly: false — и тоже с вопросом.',
+    },
+  };
+}
+
 /**
  * Пропускает вызов или бросает Declined. Возвращает запись для журнала: по ней видно,
  * спрашивали ли человека сейчас или действие прошло по выданному раньше разрешению.
  */
 export async function authorize(ctx, call) {
-  const steps = policy.ladder(call);
+  const steps = [...policy.ladder(call)];
+
+  // Хост «только для чтения» спрашивает про каждый похожий на запись вызов при любой
+  // политике, последним: выданное на сессию разрешение писать эту ступень не покрывает.
+  // Иначе флаг ничего бы не значил после первого же «да».
+  if (call.guard) {
+    const step = guardStep(call);
+    if (!steps.some((s) => s.scope === 'call')) steps.push(step);
+    else steps[steps.findIndex((s) => s.scope === 'call')] = step;
+  }
+
   if (!steps.length) return { required: false };
 
   let last = null;

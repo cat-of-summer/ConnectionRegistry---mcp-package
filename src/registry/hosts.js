@@ -17,6 +17,7 @@ export function publicHost(row) {
     hasSecret: Boolean(row.secret_id),
     hostKey: row.host_key_fp || null,
     hostKeyStatus: row.host_key_status,
+    readonly: Boolean(row.readonly),
     note: row.note || null,
     updatedAt: row.updated_at,
   };
@@ -72,11 +73,12 @@ export function upsertHost(input) {
     secretId = replaceSecret(secretId, 'password', input.password);
   }
 
+  // Пустая фраза снимает секрет — после записи строки, иначе не даст внешний ключ.
   let passphraseId = existing?.passphrase_id ?? null;
+  let orphan = null;
   if (input.passphrase !== undefined) {
-    passphraseId = input.passphrase === ''
-      ? (dropSecret(passphraseId), null)
-      : replaceSecret(passphraseId, 'passphrase', input.passphrase);
+    if (input.passphrase === '') [orphan, passphraseId] = [passphraseId, null];
+    else passphraseId = replaceSecret(passphraseId, 'passphrase', input.passphrase);
   }
 
   const ts = now();
@@ -91,6 +93,7 @@ export function upsertHost(input) {
     passphrase_id: passphraseId,
     host_key_fp: input.hostKey ?? existing?.host_key_fp ?? null,
     host_key_status: input.hostKey ? 'pinned' : (existing?.host_key_status ?? 'pending'),
+    readonly: (input.readonly ?? Boolean(existing?.readonly)) ? 1 : 0,
     note: input.note ?? existing?.note ?? null,
     updated_at: ts,
   };
@@ -104,14 +107,15 @@ export function upsertHost(input) {
   if (existing) {
     db().prepare(`UPDATE hosts SET project = @project, address = @address, port = @port, username = @username,
       auth_kind = @auth_kind, secret_id = @secret_id, passphrase_id = @passphrase_id,
-      host_key_fp = @host_key_fp, host_key_status = @host_key_status, note = @note,
+      host_key_fp = @host_key_fp, host_key_status = @host_key_status, readonly = @readonly, note = @note,
       updated_at = @updated_at WHERE alias = @alias`).run(row);
   } else {
     db().prepare(`INSERT INTO hosts (alias, project, address, port, username, auth_kind, secret_id, passphrase_id,
-      host_key_fp, host_key_status, note, created_at, updated_at)
+      host_key_fp, host_key_status, readonly, note, created_at, updated_at)
       VALUES (@alias, @project, @address, @port, @username, @auth_kind, @secret_id, @passphrase_id,
-      @host_key_fp, @host_key_status, @note, @created_at, @updated_at)`).run({ ...row, created_at: ts });
+      @host_key_fp, @host_key_status, @readonly, @note, @created_at, @updated_at)`).run({ ...row, created_at: ts });
   }
+  dropSecret(orphan);
 
   return getHost(alias);
 }

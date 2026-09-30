@@ -1,9 +1,13 @@
 import { z } from 'zod';
 import { pick } from '../i18n.js';
-import { listHosts, upsertHost, removeHost, hostUsage, hostProjects } from '../registry/hosts.js';
-import { listConnections, getConnection, upsertConnection, removeConnection, projects } from '../registry/connections.js';
+import { listHosts, upsertHost, removeHost, hostUsage, hostProjects, getHost } from '../registry/hosts.js';
+import {
+  listConnections, getConnection, upsertConnection, removeConnection, projects, applyCredentials,
+} from '../registry/connections.js';
 import { listProjects, upsertProject, removeDir, removeProject, COMMENT_MAX } from '../registry/projects.js';
-import { KINDS, AUTH_KINDS, DB_ENGINES, FILE_PROTOCOLS } from '../registry/schema.js';
+import { KINDS, AUTH_KINDS, DB_ENGINES, FILE_PROTOCOLS, credentialsSchema } from '../registry/schema.js';
+import { maskWhole } from '../secrets.js';
+import * as credentials from '../transport/credentials.js';
 import { putSecret, replaceSecret } from '../registry/crypto.js';
 import { db } from '../registry/db.js';
 import { resolve, isSecretRef } from '../registry/resolve.js';
@@ -173,8 +177,11 @@ export const tools = [
       privateKey: z.string().optional().describe(pick({ ru: 'приватный ключ целиком', en: 'full private key' })),
       passphrase: z.string().optional(),
       hostKey: z.string().optional().describe(pick({ ru: 'отпечаток SHA256:…', en: 'SHA256:… fingerprint' })),
+      readonly: z.boolean().optional().describe(pick({ ru: 'запись — с вопросом каждый раз', en: 'writes confirmed every time' })),
       note: z.string().optional(),
     },
+    // Снять флаг — значит открыть прод для записи: при любой политике это отдельный вопрос.
+    guard: (args) => (args.readonly === false && getHost(args.alias)?.readonly ? ['снятие флага «только для чтения»'] : []),
     // Хост живёт в своём проекте, но пользуются им и подключения других проектов:
     // правка кредов задевает их все, поэтому разрешение спрашивается у каждого.
     projects: (args) => hostProjects(args.alias),
@@ -183,6 +190,7 @@ export const tools = [
       адрес: args.address,
       пользователь: args.user,
       вход: args.privateKey ? 'приватный ключ' : (args.password ? 'пароль' : args.auth || 'без изменений'),
+      'только чтение': args.readonly,
     }),
     run: (args) => ({ data: upsertHost(args) }),
   },
@@ -238,11 +246,12 @@ export const tools = [
         engine: z.enum(DB_ENGINES).optional(),
         database: z.string().optional(),
         ssl: z.boolean().optional(),
+        credentials: credentialsSchema.optional(),
       }).optional().describe(pick({
         ru: 'настройки по типу: shell — cwd; files — proto, root; docker — container, composeFile; '
-          + 'db — engine, database, username',
+          + 'db — engine, database, username либо credentials (реквизиты из конфига на хосте, help db)',
         en: 'kind-specific settings: shell — cwd; files — proto, root; docker — container, composeFile; '
-          + 'db — engine, database, username',
+          + 'db — engine, database, username, or credentials (from the app config on the host, help db)',
       })),
       password: z.string().optional().describe(pick({ ru: 'пароль базы или ftp', en: 'database or ftp password' })),
       note: z.string().optional(),
@@ -320,6 +329,41 @@ export const tools = [
   },
 
   {
+    name: 'db_credentials_import',
+    group: GROUP,
+    everyTime: true,
+    mutating: true,
+    needsConnection: true,
+    kinds: ['db'],
+    title: pick({ ru: 'Реквизиты базы с хоста', en: 'Import DB credentials from the host' }),
+    description: pick({
+      ru: 'Читает реквизиты базы из конфига на хосте (config.credentials) и сохраняет в реестре; значение '
+        + 'не возвращается. Сменился пароль — вызвать снова, либо live: true.',
+      en: 'Reads DB credentials from the app config on the host (config.credentials) into the registry; the '
+        + 'value is never returned. Password changed — call again, or set live: true.',
+    }),
+    input: { alias: z.string() },
+    summary: (args, resolved) => `Прочитать реквизиты базы «${args.alias}» из `
+      + `${resolved?.config?.credentials?.path} на «${resolved?.host?.alias}» и сохранить в реестре`,
+    details: (args, resolved) => ({ источник: resolved?.config?.credentials }),
+    run: async (args, { resolved, approveHostKey, addSecret }) => {
+      const creds = await credentials.read(resolved, { approveHostKey });
+      addSecret(creds.password);
+      const applied = applyCredentials(args.alias, creds);
+      return {
+        data: {
+          alias: args.alias,
+          found: creds.found,
+          changed: applied.changed,
+          username: applied.username,
+          database: applied.database,
+          password: maskWhole(creds.password, 'password'),
+        },
+      };
+    },
+  },
+
+  {
     name: 'conn_check',
     group: GROUP,
     mutating: false,
@@ -332,11 +376,11 @@ export const tools = [
         + 'matches and the database answers. Changes nothing.',
     }),
     input: { alias: z.string() },
-    run: async (args, { approveHostKey }) => {
+    run: async (args, { approveHostKey, addSecret }) => {
       const resolved = resolve(args.alias);
 
       if (resolved.kind === 'db') {
-        const res = await dbTransport.query(resolved, 'select 1', { approveHostKey, maxRows: 1 });
+        const res = await dbTransport.query(resolved, 'select 1', { approveHostKey, addSecret, maxRows: 1 });
         return { data: { alias: args.alias, ok: true, kind: 'db', via: res.via } };
       }
 

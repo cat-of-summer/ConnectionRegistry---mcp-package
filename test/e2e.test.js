@@ -292,6 +292,159 @@ test('запертый реестр не мешает читать метада�
   assert.ok(info.json['реестр']['подключений'] >= 5);
 });
 
+test('большой вывод уходит в артефакт: без потолка, с размером и хешем', { skip: !enabled }, async (t) => {
+  const { client } = await connect(t, 'accept');
+  const res = await call(client, 'ssh_exec', {
+    alias: 'demo/shell',
+    command: 'head -c 400000 /dev/urandom | base64',
+    output: 'artifact',
+    name: 'random.txt',
+  });
+
+  assert.equal(res.isError, false, res.text);
+  assert.equal(res.json.exitCode, 0);
+  assert.equal(res.json.stdout, undefined, 'stdout в ответ не попал');
+  assert.ok(res.json.bytes > 500_000, `в файле ${res.json.bytes} Б — больше потолка ответа`);
+  assert.match(res.json.uri, /^cr:\/\/artifacts\/.+\/random\.txt$/);
+
+  const body = Buffer.from(await (await fetch(`${BASE}/artifacts/${res.json.uri.slice('cr://artifacts/'.length)}`)).arrayBuffer());
+  assert.equal(body.length, res.json.bytes);
+  const { createHash } = await import('node:crypto');
+  assert.equal(createHash('sha256').update(body).digest('hex'), res.json.sha256);
+});
+
+test('env: секрет доезжает до команды ссылкой и не возвращается агенту', { skip: !enabled }, async (t) => {
+  const { client } = await connect(t, 'accept');
+  const res = await call(client, 'ssh_exec', {
+    alias: 'demo/shell',
+    command: 'echo "длина=${#DB_PWD}" && echo "значение=$DB_PWD" && cat',
+    env: { DB_PWD: 'cr://secret/demo/db#password' },
+    stdin: 'исходный stdin на месте',
+  });
+
+  assert.equal(res.isError, false, res.text);
+  assert.match(res.json.stdout, new RegExp(`длина=${[...DB_PASSWORD].length}\\b`), 'значение дошло целиком');
+  assert.match(res.json.stdout, /исходный stdin на месте/, 'stdin команды не съеден преамбулой');
+  assert.equal(res.text.includes(DB_PASSWORD), false, 'пароль вернулся агенту');
+
+  const entry = (await call(client, 'audit_query', { alias: 'demo/shell', tool: 'ssh_exec', limit: 1 })).json.entries[0];
+  const full = await call(client, 'audit_show', { id: entry.id });
+  assert.equal(full.text.includes(DB_PASSWORD), false, 'пароль в журнале');
+  assert.equal(full.json.args.env.DB_PWD, 'cr://secret/demo/db#password');
+});
+
+test('реквизиты базы читаются с хоста: .env, php-конфиг, живое чтение', { skip: !enabled }, async (t) => {
+  const { client, asked } = await connect(t, 'accept');
+  const alias = 'demo/app-db';
+
+  t.after(async () => {
+    const janitor = new Client({ name: 'janitor', version: '0' }, { capabilities: { elicitation: {} } });
+    janitor.setRequestHandler(ElicitRequestSchema, async () => ({ action: 'accept', content: { approve: true } }));
+    await janitor.connect(new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`)));
+    await call(janitor, 'conn_remove', { alias });
+    await call(janitor, 'ssh_exec', { alias: 'demo/shell', command: 'rm -f /config/e2e.env /config/e2e.env.away /config/e2e-db.php' });
+    await janitor.close();
+  });
+
+  // Конфиги приложения кладутся на мишень через сам реестр — пароль в них едет ссылкой.
+  const put = await call(client, 'ssh_exec', {
+    alias: 'demo/shell',
+    command: [
+      "printf 'APP_NAME=shop\\nDB_USERNAME=shop\\nDB_DATABASE=shop\\nDB_PASSWORD=\"%s\"\\n' \"$P\" > /config/e2e.env",
+      "printf '<?php\\ndefined(\"BASEPATH\") OR exit(\"No direct script access allowed\");\\n"
+        + "$db[\"default\"] = array(\"hostname\" => \"mysql_test\", \"username\" => \"shop\", \"password\" => \"%s\", \"database\" => \"shop\");\\n' \"$P\" > /config/e2e-db.php",
+    ].join(' && '),
+    env: { P: 'cr://secret/demo/mysql#password' },
+  });
+  assert.equal(put.isError, false, put.text);
+  assert.equal(put.json.exitCode, 0, put.text);
+
+  const created = await call(client, 'conn_set', {
+    alias,
+    kind: 'db',
+    host: 'demo/srv',
+    config: { engine: 'mysql', address: 'mysql_test', credentials: { path: '/config/e2e.env', format: 'env' } },
+  });
+  assert.equal(created.isError, false, created.text);
+
+  const early = await call(client, 'db_query', { alias, sql: 'select 1' });
+  assert.equal(early.isError, true);
+  assert.match(early.text, /db_credentials_import/, 'до импорта — внятная подсказка');
+
+  const before = asked.length;
+  const imported = await call(client, 'db_credentials_import', { alias });
+  assert.equal(imported.isError, false, imported.text);
+  assert.equal(asked.length, before + 1, 'импорт спрашивается каждый раз');
+  assert.deepEqual(imported.json.changed.sort(), ['database', 'password', 'username']);
+  assert.match(imported.json.password, /^••••\[password, \d+ Б, sha256:/);
+  assert.equal(imported.text.includes(DB_PASSWORD), false, 'пароль вернулся агенту');
+
+  const env = await call(client, 'db_query', { alias, sql: 'select 11 as n' });
+  assert.equal(env.isError, false, env.text);
+  assert.deepEqual(env.json.rows, [[11]]);
+
+  // php: CodeIgniter-конфиг с защитой BASEPATH, реквизиты — в $db['default'].
+  const toPhp = await call(client, 'conn_set', {
+    alias, password: '', config: { credentials: { path: '/config/e2e-db.php', format: 'php', key: 'db.default' } },
+  });
+  assert.equal(toPhp.isError, false, toPhp.text);
+  assert.equal(toPhp.json.hasSecret, false, 'пароль сброшен, чтобы импорт его прочитал заново');
+  const php = await call(client, 'db_credentials_import', { alias });
+  assert.equal(php.isError, false, php.text);
+  assert.deepEqual(php.json.changed, ['password']);
+  assert.equal((await call(client, 'db_query', { alias, sql: 'select 12 as n' })).json.rows[0][0], 12);
+
+  // live: секрета в реестре нет — реестр читает файл сам и запоминает.
+  const toLive = await call(client, 'conn_set', {
+    alias, password: '', config: { credentials: { path: '/config/e2e.env', format: 'env', live: true } },
+  });
+  assert.equal(toLive.isError, false, toLive.text);
+  const live = await call(client, 'db_query', { alias, sql: 'select 13 as n' });
+  assert.equal(live.isError, false, live.text);
+  assert.deepEqual(live.json.rows, [[13]]);
+  assert.match(live.json.warning, /изменились \(password\)/);
+
+  // Файла нет — работаем сохранённым, но говорим об этом.
+  await call(client, 'ssh_exec', { alias: 'demo/shell', command: 'mv /config/e2e.env /config/e2e.env.away' });
+  const stale = await call(client, 'db_query', { alias, sql: 'select 14 as n' });
+  assert.equal(stale.isError, false, stale.text);
+  assert.match(stale.json.warning, /не прочитались.*сохранённые/);
+
+  const journal = await call(client, 'audit_query', { alias, limit: 50 });
+  assert.equal(journal.text.includes(DB_PASSWORD), false, 'пароль в журнале');
+});
+
+test('хост «только для чтения»: чтение молча, запись — вопрос на каждый вызов', { skip: !enabled }, async (t) => {
+  const { client, asked } = await connect(t, 'accept');
+
+  await call(client, 'ssh_exec', { alias: 'demo/shell', command: 'true' });
+  const set = await call(client, 'host_set', { alias: 'demo/srv', readonly: true });
+  assert.equal(set.isError, false, set.text);
+
+  try {
+    const start = asked.length;
+    const read = await call(client, 'ssh_exec', { alias: 'demo/shell', command: 'ls /config' });
+    assert.equal(read.isError, false, read.text);
+    assert.equal(asked.length, start, 'чтение не спрашивает');
+
+    for (const n of [1, 2]) {
+      const write = await call(client, 'ssh_exec', { alias: 'demo/shell', command: `touch /config/ro-${n} && rm /config/ro-${n}` });
+      assert.equal(write.isError, false, write.text);
+      assert.equal(asked.length, start + n, 'каждая запись — свой вопрос');
+      assert.match(asked.at(-1), /только для чтения/);
+    }
+
+    const changes = await call(client, 'audit_query', { host: 'demo/srv', onlyChanges: true, limit: 5 });
+    const commands = changes.json.entries.map((e) => e.command || '');
+    assert.ok(commands.some((c) => c.includes('touch /config/ro-2')));
+    assert.equal(commands.some((c) => c.includes('ls /config')), false);
+  } finally {
+    const off = await call(client, 'host_set', { alias: 'demo/srv', readonly: false });
+    assert.equal(off.isError, false, off.text);
+    assert.match(asked.at(-1), /снятие флага/);
+  }
+});
+
 test('у проекта несколько SSH-подключений: prod по паролю, dev по ключу', { skip: !enabled }, async (t) => {
   const { client, asked } = await connect(t, 'accept');
   const { utils } = (await import('ssh2')).default;

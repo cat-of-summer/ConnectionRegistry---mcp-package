@@ -23,7 +23,12 @@ export const tools = [
       tool: z.string().optional(),
       since: z.string().optional().describe(pick({ ru: 'ISO-время, от', en: 'ISO time, from' })),
       until: z.string().optional().describe(pick({ ru: 'ISO-время, до', en: 'ISO time, to' })),
+      host: z.string().optional().describe(pick({ ru: 'алиас хоста: всё, что шло на этот сервер', en: 'host alias: everything sent to that server' })),
       onlyErrors: z.boolean().optional(),
+      onlyChanges: z.boolean().optional().describe(pick({
+        ru: 'только то, что меняло: запись, а не чтение — «что на хосте менялось»',
+        en: 'only calls that changed something — "what changed on the host"',
+      })),
       contains: z.string().optional().describe(pick({ ru: 'подстрока в команде или выводе', en: 'substring in command or output' })),
       limit: z.number().int().positive().optional(),
     },

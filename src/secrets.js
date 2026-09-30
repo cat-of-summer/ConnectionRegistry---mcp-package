@@ -206,14 +206,82 @@ export function maskWhole(value, kindHint = 'secret') {
 
 /**
  * Ищет секреты в названных полях аргументов. Возвращает находки с именем поля —
- * отказ должен сказать человеку и агенту, где именно лежит ключ.
+ * отказ должен сказать человеку и агенту, где именно лежит ключ. Поле-объект (env)
+ * проходится по значениям: «env.MYSQL_PWD».
  */
 export function scanArgs(args, fields = []) {
   const found = [];
   for (const field of fields) {
     const value = args?.[field];
-    if (typeof value !== 'string') continue;
-    for (const finding of detect(value)) found.push({ ...finding, field });
+    if (typeof value === 'string') {
+      for (const finding of detect(value)) found.push({ ...finding, field });
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    for (const [key, inner] of Object.entries(value)) {
+      if (typeof inner !== 'string') continue;
+      for (const finding of detect(inner)) found.push({ ...finding, field: `${field}.${key}` });
+    }
   }
   return found;
+}
+
+/** Длинные раньше коротких: пароль, вложенный в ключ, не должен порвать ключ на куски. */
+const usable = (secrets) => [...new Set(secrets.map(String))]
+  .filter((s) => s.length >= 4)
+  .sort((a, b) => b.length - a.length);
+
+/**
+ * Вычищает конкретные значения из реестра: пароль мог уйти в эхо команды, в `cat .env`,
+ * в `echo $MYSQL_PWD`. Отпечатка здесь нет намеренно — значение известно реестру, и
+ * примета «какой это пароль» агенту ничего не даёт.
+ */
+export function scrub(text, secrets = []) {
+  if (!text) return text;
+  let out = String(text);
+  for (const secret of usable(secrets)) out = out.split(secret).join(MASK);
+  return out;
+}
+
+/** То же для ответа целиком: строки внутри объектов и массивов. */
+export function scrubDeep(value, secrets = [], depth = 0) {
+  if (!secrets.length) return value;
+  if (typeof value === 'string') return scrub(value, secrets);
+  if (depth > 8 || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((v) => scrubDeep(v, secrets, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v, secrets, depth + 1)]));
+}
+
+/**
+ * Потоковая чистка для вывода, который идёт в файл, минуя память. Секрет может лечь на
+ * границу двух кусков, поэтому хвост длиной «самый длинный секрет минус байт» держится
+ * до следующего куска. Работаем в latin1: байт — символ, и UTF-8 не рвётся посередине.
+ */
+export function scrubber(secrets = []) {
+  const list = usable(secrets).map((s) => Buffer.from(s, 'utf8').toString('latin1'));
+  const mask = Buffer.from(MASK, 'utf8').toString('latin1');
+  const keep = list.length ? list[0].length - 1 : 0;
+  let carry = '';
+
+  const clean = (text) => {
+    let out = text;
+    for (const secret of list) out = out.split(secret).join(mask);
+    return out;
+  };
+
+  return {
+    /** Кусок на запись: всё, кроме хвоста, который ещё может оказаться началом секрета. */
+    push(chunk) {
+      if (!list.length) return chunk;
+      const data = clean(carry + chunk.toString('latin1'));
+      const cut = Math.max(0, data.length - keep);
+      carry = data.slice(cut);
+      return Buffer.from(data.slice(0, cut), 'latin1');
+    },
+    end() {
+      const rest = clean(carry);
+      carry = '';
+      return Buffer.from(rest, 'latin1');
+    },
+  };
 }

@@ -1,6 +1,8 @@
+import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { Client } from 'ssh2';
 import { cfg } from '../config.js';
+import { scrubber } from '../secrets.js';
 
 // Один хост — одно живое соединение. Поверх него и шелл, и файлы, и docker, и
 // туннель к базе: ровно то, ради чего реестр разделён на хосты и подключения.
@@ -156,9 +158,45 @@ export function quote(value) {
   return `'${String(value).replace(/'/g, `'\''`)}'`;
 }
 
-/** Выполняет команду и возвращает код возврата и потоки целиком (с потолком по объёму). */
-export function exec(client, command, { cwd, stdin, timeoutMs = cfg.execTimeoutMs, env } = {}) {
-  const full = cwd ? `cd ${quote(cwd)} && ${command}` : command;
+export const VAR_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Переменные окружения команды едут первыми строками stdin, а не запросом env канала SSH:
+ * sshd пропускает оттуда только то, что разрешено AcceptEnv, — обычно LANG и LC_*, — и
+ * молча выбрасывает остальное. Шелл читает их встроенным read, который из трубы берёт
+ * ровно по байту, так что исходный stdin достаётся команде нетронутым. Заодно значение
+ * не видно ни в ps на сервере, ни в строке команды в журнале.
+ */
+export function withVars(command, vars, stdin) {
+  const entries = Object.entries(vars || {});
+  if (!entries.length) return { command, stdin };
+
+  for (const [name, value] of entries) {
+    if (!VAR_NAME.test(name)) throw new Error(`имя переменной «${name}» не годится для шелла`);
+    if (/[\n\0]/.test(String(value))) {
+      throw new Error(`значение переменной ${name} многострочное — через env оно не передаётся; передайте его в stdin`);
+    }
+  }
+
+  const prelude = entries.map(([name]) => `IFS= read -r ${name} && export ${name}`).join(' && ');
+  return {
+    command: `{ ${prelude}; } && ${command}`,
+    stdin: `${entries.map(([, value]) => String(value)).join('\n')}\n${stdin ?? ''}`,
+  };
+}
+
+/**
+ * Выполняет команду и возвращает код возврата и потоки целиком (с потолком по объёму).
+ *
+ * vars     — переменные окружения, см. withVars.
+ * stdoutTo — { file, secrets }: stdout пишется в файл потоком, без потолка, с чисткой
+ *            известных секретов и sha256 по дороге. В ответе тогда не текст, а размер и хеш.
+ */
+export function exec(client, command, { cwd, stdin, timeoutMs = cfg.execTimeoutMs, env, vars, stdoutTo } = {}) {
+  const located = cwd ? `cd ${quote(cwd)} && ${command}` : command;
+  const prepared = withVars(located, vars, stdin);
+  const full = prepared.command;
+  const input = prepared.stdin;
 
   return new Promise((resolve, reject) => {
     client.exec(full, { env }, (err, stream) => {
@@ -170,6 +208,20 @@ export function exec(client, command, { cwd, stdin, timeoutMs = cfg.execTimeoutM
       let errBytes = 0;
       let truncated = false;
       let timedOut = false;
+
+      const file = stdoutTo ? fs.createWriteStream(stdoutTo.file) : null;
+      const clean = stdoutTo ? scrubber(stdoutTo.secrets) : null;
+      const hash = stdoutTo ? crypto.createHash('sha256') : null;
+      let fileBytes = 0;
+      let fileError = null;
+      file?.on('error', (e) => { fileError = e; });
+
+      const toFile = (buf) => {
+        if (!buf.length) return true;
+        hash.update(buf);
+        fileBytes += buf.length;
+        return file.write(buf);
+      };
 
       const timer = setTimeout(() => {
         timedOut = true;
@@ -187,12 +239,19 @@ export function exec(client, command, { cwd, stdin, timeoutMs = cfg.execTimeoutM
         bucket.push(chunk);
       };
 
-      stream.on('data', (chunk) => take(chunk, out, false));
+      stream.on('data', (chunk) => {
+        if (!file) return take(chunk, out, false);
+        // Диск медленнее сети бывает: держим канал, пока файл не прожуёт своё.
+        if (!toFile(clean.push(chunk))) {
+          stream.pause();
+          file.once('drain', () => stream.resume());
+        }
+      });
       stream.stderr.on('data', (chunk) => take(chunk, errOut, true));
 
-      stream.on('close', (code, signal) => {
+      stream.on('close', async (code, signal) => {
         clearTimeout(timer);
-        resolve({
+        const result = {
           command: full,
           code: timedOut ? null : (code ?? null),
           signal: signal ?? null,
@@ -200,12 +259,20 @@ export function exec(client, command, { cwd, stdin, timeoutMs = cfg.execTimeoutM
           stderr: Buffer.concat(errOut).toString('utf8'),
           truncated,
           timedOut,
-        });
+        };
+
+        if (file) {
+          toFile(clean.end());
+          await new Promise((done) => file.end(done));
+          if (fileError) return reject(fileError);
+          result.file = { bytes: fileBytes, sha256: hash.digest('hex') };
+        }
+        resolve(result);
       });
 
-      stream.on('error', (streamErr) => { clearTimeout(timer); reject(streamErr); });
+      stream.on('error', (streamErr) => { clearTimeout(timer); file?.destroy(); reject(streamErr); });
 
-      if (stdin !== undefined && stdin !== null) stream.end(stdin);
+      if (input !== undefined && input !== null) stream.end(input);
       else stream.end();
     });
   });

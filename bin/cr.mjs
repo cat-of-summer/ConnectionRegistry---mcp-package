@@ -135,6 +135,8 @@ const COMMANDS = {
         privateKey: args['key-file'] ? fs.readFileSync(args['key-file'], 'utf8') : undefined,
         passphrase: secretFrom(args, 'passphrase'),
         hostKey: args['host-key'],
+        // Снять флаг из CLI можно без вопроса: у консоли стенда и так все права.
+        readonly: args.readonly ? true : (args.writable ? false : undefined),
         note: args.note,
       }));
     }
@@ -260,6 +262,7 @@ const HELP = `cr — реестр подключений
   cr host ls [--project <проект>]
   cr host add <проект/имя> --address <адрес> --user <логин> [--password | --password-file <ф> | --key-file <ф>]
                            [--port 22] [--passphrase-file <ф>] [--host-key SHA256:…] [--note …]
+                           [--readonly | --writable]   запись через хост — с вопросом на каждый вызов
   cr host pin <проект/имя> --fingerprint SHA256:…
   cr host rm  <проект/имя>
 

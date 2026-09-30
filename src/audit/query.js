@@ -46,8 +46,22 @@ function* linesBackwards(file) {
   }
 }
 
+/**
+ * Изменил ли вызов что-то на той стороне. Изменяющие по объявлению — да, кроме shell:
+ * там решают приметы записи, иначе в «что менялось» попало бы каждое ls. Записи старше
+ * этих полей судятся по объявлению инструмента — точнее уже не узнать.
+ */
+export function changed(record) {
+  if (record.ok === false) return false;
+  if (record.approval?.status && record.approval.status !== 'approved') return false;
+  if (Array.isArray(record.writeSigns)) return record.writeSigns.length > 0;
+  return record.mutating === true;
+}
+
 function matches(record, filter) {
   if (filter.alias && record.alias !== filter.alias) return false;
+  if (filter.host && record.target !== filter.host) return false;
+  if (filter.onlyChanges && !changed(record)) return false;
   if (filter.project && !String(record.alias || '').startsWith(`${filter.project}/`)) return false;
   if (filter.tool && record.tool !== filter.tool) return false;
   if (filter.onlyErrors && record.ok !== false) return false;
@@ -115,6 +129,7 @@ function summary(record) {
     durationMs: record.durationMs,
     command: record.command,
     approval: record.approval,
+    writeSigns: record.writeSigns?.length ? record.writeSigns : undefined,
     bytes: record.bytes,
     error: record.error,
   };

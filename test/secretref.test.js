@@ -140,6 +140,61 @@ test('вывод чистится от всех секретов проекта,
   assert.equal(record.stdout.includes('db-пароль-магазина'), false, 'пароль базы того же проекта в stdout');
 });
 
+test('env: ссылки разворачиваются по значениям, текст остаётся текстом', async () => {
+  const seen = [];
+  const exec = wrap({
+    name: 'ssh_exec',
+    group: 'shell',
+    needsConnection: true,
+    kinds: ['shell'],
+    mutating: false,
+    scan: ['command', 'stdin', 'env'],
+    secretRefs: ['stdin', 'env'],
+    run: async (args) => {
+      seen.push(args);
+      return { data: { stdout: `MYSQL_PWD=${args.env.MYSQL_PWD}` }, ok: true, command: args.command, stdout: `MYSQL_PWD=${args.env.MYSQL_PWD}` };
+    },
+  }, ctx);
+
+  const res = await exec({
+    alias: 'shop/shell',
+    command: 'echo "MYSQL_PWD=$MYSQL_PWD"',
+    env: { MYSQL_PWD: 'cr://secret/shop/db#password', LANG: 'C' },
+  });
+
+  assert.equal(res.isError, undefined, res.content?.[0]?.text);
+  assert.deepEqual(seen[0].env, { MYSQL_PWD: 'db-пароль-магазина', LANG: 'C' });
+  assert.equal(res.content[0].text.includes('db-пароль-магазина'), false, 'пароль вернулся агенту в ответе');
+
+  const record = query.get(last().id);
+  assert.equal(record.args.env.MYSQL_PWD, 'cr://secret/shop/db#password');
+  assert.equal(JSON.stringify(record).includes('db-пароль-магазина'), false, 'пароль в журнале');
+});
+
+test('ключ открытым текстом в env отклоняется с именем переменной', async () => {
+  const seen = [];
+  const exec = wrap({
+    name: 'ssh_exec', group: 'shell', needsConnection: true, kinds: ['shell'], mutating: false,
+    scan: ['command', 'env'], secretRefs: ['env'], run: async (args) => { seen.push(args); return { data: {} }; },
+  }, ctx);
+
+  const res = await exec({ alias: 'shop/shell', command: 'true', env: { KEY } });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /«env\.KEY»/);
+  assert.equal(seen.length, 0);
+});
+
+test('ошибка инструмента тоже чистится от секретов проекта', async () => {
+  const exec = wrap({
+    name: 'ssh_exec', group: 'shell', needsConnection: true, kinds: ['shell'], mutating: false,
+    run: async () => { throw new Error('доступ запрещён для пароля db-пароль-магазина'); },
+  }, ctx);
+
+  const res = await exec({ alias: 'shop/shell', command: 'true' });
+  assert.equal(res.isError, true);
+  assert.equal(res.content[0].text.includes('db-пароль-магазина'), false);
+});
+
 test('secret_set не принимает ссылку: перекладывать секрет незачем', async () => {
   const secretSet = wrap(registryTools.find((t) => t.name === 'secret_set'), ctx);
   const res = await secretSet({ target: 'host', alias: 'shop/srv', kind: 'password', value: 'cr://secret/blog/srv#private_key' });
